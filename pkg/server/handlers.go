@@ -165,7 +165,7 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 	const initialBackoff = 2 * time.Second
 	const maxBackoff = 60 * time.Second
 	const rateLimitCooldown = 30 * time.Second // How long to mark URL as rate-limited
-	const retryTimeout = 2 * time.Minute        // Keep retrying for 2 minutes after first 458
+	retryTimeout := time.Duration(c.RateLimitRetryTimeout) * time.Minute // Keep retrying for configured minutes after first 458
 
 	urlStr := oriURL.String()
 
