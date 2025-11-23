@@ -205,23 +205,45 @@ func TestStream_exponentialBackoff(t *testing.T) {
 		t.Error("Expected URL to be marked as rate-limited")
 	}
 
-	// Test exponential backoff calculation
+	// Test exponential backoff calculation with retry timeout
 	const initialBackoff = 2 * time.Second
 	const maxBackoff = 60 * time.Second
+	const retryTimeout = 1 * time.Minute
 
-	for attempt := 1; attempt <= 3; attempt++ {
+	// Simulate retry logic: track first 458 time and calculate backoffs
+	first458Time := time.Now()
+	for attempt := 1; attempt <= 5; attempt++ {
 		backoffDuration := initialBackoff * time.Duration(1<<uint(attempt-1))
 		if backoffDuration > maxBackoff {
 			backoffDuration = maxBackoff
 		}
 
+		// Check if we'd exceed retry timeout
+		elapsed := time.Since(first458Time)
+		remainingTime := retryTimeout - elapsed
+		if backoffDuration > remainingTime {
+			backoffDuration = remainingTime
+		}
+
+		// Verify backoff is calculated correctly
 		expected := initialBackoff * time.Duration(1<<uint(attempt-1))
 		if expected > maxBackoff {
 			expected = maxBackoff
 		}
+		if expected > remainingTime {
+			expected = remainingTime
+		}
 
 		if backoffDuration != expected {
 			t.Errorf("Attempt %d: expected backoff %v, got %v", attempt, expected, backoffDuration)
+		}
+
+		// Simulate sleep (but don't actually sleep in test)
+		first458Time = first458Time.Add(backoffDuration)
+
+		// Stop if we'd exceed timeout
+		if time.Since(first458Time) >= retryTimeout {
+			break
 		}
 	}
 }
@@ -258,16 +280,16 @@ func TestStream_rateLimitTracking(t *testing.T) {
 	}
 }
 
-func TestStream_maxRetriesExceeded(t *testing.T) {
-	// Test that after max retries, URL remains rate-limited
+func TestStream_retryTimeoutExceeded(t *testing.T) {
+	// Test that after 1 minute of retries, URL remains rate-limited
 	// Reset global tracker
 	globalRateLimitTracker = &rateLimitTracker{
 		rateLimited: make(map[string]time.Time),
 	}
 
-	testURL := "http://example.com/max-retries"
+	testURL := "http://example.com/retry-timeout"
 
-	// Simulate max retries exceeded - URL should be marked as rate-limited
+	// Simulate retry timeout exceeded - URL should be marked as rate-limited
 	globalRateLimitTracker.markRateLimited(testURL, 30*time.Second)
 
 	// Verify it's still marked
@@ -276,7 +298,7 @@ func TestStream_maxRetriesExceeded(t *testing.T) {
 	globalRateLimitTracker.mu.RUnlock()
 
 	if !isRateLimited {
-		t.Error("Expected URL to remain rate-limited after max retries")
+		t.Error("Expected URL to remain rate-limited after retry timeout")
 	}
 }
 
