@@ -28,10 +28,66 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
+
+// rateLimitTracker tracks URLs that are currently rate-limited
+// to avoid making duplicate requests to the same URL
+type rateLimitTracker struct {
+	mu          sync.RWMutex
+	rateLimited map[string]time.Time // URL -> time when rate limit expires
+}
+
+var globalRateLimitTracker = &rateLimitTracker{
+	rateLimited: make(map[string]time.Time),
+}
+
+// waitIfRateLimited checks if a URL is currently rate-limited and waits if necessary
+// Returns true if we should skip the request (rate limit active), false otherwise
+func (rlt *rateLimitTracker) waitIfRateLimited(url string, maxWait time.Duration) bool {
+	rlt.mu.RLock()
+	expiresAt, isRateLimited := rlt.rateLimited[url]
+	rlt.mu.RUnlock()
+
+	if !isRateLimited {
+		return false
+	}
+
+	now := time.Now()
+	if expiresAt.After(now) {
+		waitDuration := expiresAt.Sub(now)
+		if waitDuration > maxWait {
+			waitDuration = maxWait
+		}
+		log.Printf("[iptv-proxy] %v | URL is rate-limited, waiting %v before retry\n",
+			time.Now().Format("2006/01/02 - 15:04:05"), waitDuration)
+		time.Sleep(waitDuration)
+		return true
+	}
+
+	// Rate limit expired, remove it
+	rlt.mu.Lock()
+	delete(rlt.rateLimited, url)
+	rlt.mu.Unlock()
+	return false
+}
+
+// markRateLimited marks a URL as rate-limited for a given duration
+func (rlt *rateLimitTracker) markRateLimited(url string, duration time.Duration) {
+	rlt.mu.Lock()
+	defer rlt.mu.Unlock()
+	rlt.rateLimited[url] = time.Now().Add(duration)
+}
+
+// clearRateLimit removes rate limit tracking for a URL (on successful request)
+func (rlt *rateLimitTracker) clearRateLimit(url string) {
+	rlt.mu.Lock()
+	defer rlt.mu.Unlock()
+	delete(rlt.rateLimited, url)
+}
 
 func (c *Config) getM3U(ctx *gin.Context) {
 	ctx.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, c.M3UFileName))
@@ -65,25 +121,72 @@ func (c *Config) m3u8ReverseProxy(ctx *gin.Context) {
 func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 	client := &http.Client{}
 
-	req, err := http.NewRequest("GET", oriURL.String(), nil)
-	if err != nil {
-		ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
-		return
-	}
+	const maxRetries = 3
+	const rateLimitStatusCode = 458
+	const initialBackoff = 2 * time.Second
+	const maxBackoff = 60 * time.Second
+	const rateLimitCooldown = 30 * time.Second // How long to mark URL as rate-limited
 
-	mergeHttpHeader(req.Header, ctx.Request.Header)
+	urlStr := oriURL.String()
 
-	resp, err := client.Do(req)
-	if err != nil {
-		ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
-		return
+	// Check if this URL is currently rate-limited and wait if necessary
+	globalRateLimitTracker.waitIfRateLimited(urlStr, maxBackoff)
+
+	var resp *http.Response
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		req, err := http.NewRequest("GET", urlStr, nil)
+		if err != nil {
+			ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
+			return
+		}
+
+		mergeHttpHeader(req.Header, ctx.Request.Header)
+
+		resp, err = client.Do(req)
+		if err != nil {
+			ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
+			return
+		}
+
+		// Check for rate limiting (458) response
+		if resp.StatusCode == rateLimitStatusCode {
+			resp.Body.Close()
+
+			// Calculate exponential backoff: 2s, 4s, 8s, etc., capped at maxBackoff
+			backoffDuration := initialBackoff * time.Duration(1<<uint(attempt-1))
+			if backoffDuration > maxBackoff {
+				backoffDuration = maxBackoff
+			}
+
+			// Mark this URL as rate-limited to prevent other concurrent requests
+			globalRateLimitTracker.markRateLimited(urlStr, rateLimitCooldown)
+
+			if attempt < maxRetries {
+				log.Printf("[iptv-proxy] %v | Rate limit (458) detected on attempt %d/%d, backing off for %v\n",
+					time.Now().Format("2006/01/02 - 15:04:05"), attempt, maxRetries, backoffDuration)
+				time.Sleep(backoffDuration)
+				continue
+			}
+			// Max retries exceeded, return the 458 status
+			log.Printf("[iptv-proxy] %v | Rate limit (458) persisted after %d attempts, returning error\n",
+				time.Now().Format("2006/01/02 - 15:04:05"), maxRetries)
+			ctx.Status(rateLimitStatusCode)
+			return
+		}
+
+		// Success or non-458 error - clear rate limit tracking and break out of retry loop
+		globalRateLimitTracker.clearRateLimit(urlStr)
+		break
 	}
 	defer resp.Body.Close()
 
 	mergeHttpHeader(ctx.Writer.Header(), resp.Header)
 	ctx.Status(resp.StatusCode)
+	// Use 128KB buffer (4x the default 32KB) to reduce number of requests
+	buf := make([]byte, 128*1024)
 	ctx.Stream(func(w io.Writer) bool {
-		io.Copy(w, resp.Body) // nolint: errcheck
+		io.CopyBuffer(w, resp.Body, buf) // nolint: errcheck
 		return false
 	})
 }
