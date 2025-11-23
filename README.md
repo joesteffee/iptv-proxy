@@ -46,10 +46,3 @@ A reverse proxy for IPTV M3U playlists and Xtream Codes server API. This Go appl
 ## Configuration
 
 The application can be configured via command-line flags or environment variables. See `--help` for available options.
-
-## License
-
-GNU General Public License v3.0
-
-Copyright (C) 2020 Pierre-Emmanuel Jacquier
-
