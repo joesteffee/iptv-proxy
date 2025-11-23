@@ -442,15 +442,14 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 	client := sharedHTTPClientHLS
 
 	const rateLimitStatusCode = 458
-	const initialBackoff = 2 * time.Second
-	const maxBackoff = 60 * time.Second
+	const retryInterval = 5 * time.Second // Retry every 5 seconds after 458 response
 	const rateLimitCooldown = 30 * time.Second // How long to mark URL as rate-limited
 	retryTimeout := time.Duration(c.RateLimitRetryTimeout) * time.Minute // Keep retrying for configured minutes after first 458
 
 	urlStr := oriURL.String()
 
 	// Check if this URL is currently rate-limited and wait if necessary
-	globalRateLimitTracker.waitIfRateLimited(urlStr, maxBackoff)
+	globalRateLimitTracker.waitIfRateLimited(urlStr, retryInterval)
 
 	var resp *http.Response
 	var first458Time *time.Time
@@ -486,22 +485,17 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 			}
 
 			// Check if we've exceeded the retry timeout
-			if time.Since(*first458Time) >= retryTimeout {
+			elapsed := time.Since(*first458Time)
+			if elapsed >= retryTimeout {
 				log.Printf("[iptv-proxy] %v | HLS: Rate limit (458) persisted for %v, returning error after %d attempts\n",
 					time.Now().Format("2006/01/02 - 15:04:05"), retryTimeout, attempt)
 				ctx.Status(rateLimitStatusCode)
 				return
 			}
 
-			// Calculate exponential backoff: 2s, 4s, 8s, etc., capped at maxBackoff
-			backoffDuration := initialBackoff * time.Duration(1<<uint(attempt-1))
-			if backoffDuration > maxBackoff {
-				backoffDuration = maxBackoff
-			}
-
-			// Ensure we don't exceed the retry timeout
-			elapsed := time.Since(*first458Time)
+			// Calculate remaining time and adjust retry interval if needed
 			remainingTime := retryTimeout - elapsed
+			backoffDuration := retryInterval
 			if backoffDuration > remainingTime {
 				backoffDuration = remainingTime
 			}
@@ -509,7 +503,7 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 			// Mark this URL as rate-limited to prevent other concurrent requests
 			globalRateLimitTracker.markRateLimited(urlStr, rateLimitCooldown)
 
-			log.Printf("[iptv-proxy] %v | HLS: Rate limit (458) detected on attempt %d, backing off for %v (retrying for %v more)\n",
+			log.Printf("[iptv-proxy] %v | HLS: Rate limit (458) detected on attempt %d, retrying in %v (retrying for %v more)\n",
 				time.Now().Format("2006/01/02 - 15:04:05"), attempt, backoffDuration, remainingTime-backoffDuration)
 			time.Sleep(backoffDuration)
 			continue
@@ -536,7 +530,7 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 			locationStr := location.String()
 
 			// Check if redirect URL is currently rate-limited and wait if necessary
-			globalRateLimitTracker.waitIfRateLimited(locationStr, maxBackoff)
+			globalRateLimitTracker.waitIfRateLimited(locationStr, retryInterval)
 
 			var hlsResp *http.Response
 			var first458TimeRedirect *time.Time
@@ -572,22 +566,17 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 					}
 
 					// Check if we've exceeded the retry timeout
-					if time.Since(*first458TimeRedirect) >= retryTimeout {
+					elapsed := time.Since(*first458TimeRedirect)
+					if elapsed >= retryTimeout {
 						log.Printf("[iptv-proxy] %v | HLS redirect: Rate limit (458) persisted for %v, returning error after %d attempts\n",
 							time.Now().Format("2006/01/02 - 15:04:05"), retryTimeout, redirectAttempt)
 						ctx.Status(rateLimitStatusCode)
 						return
 					}
 
-					// Calculate exponential backoff: 2s, 4s, 8s, etc., capped at maxBackoff
-					backoffDuration := initialBackoff * time.Duration(1<<uint(redirectAttempt-1))
-					if backoffDuration > maxBackoff {
-						backoffDuration = maxBackoff
-					}
-
-					// Ensure we don't exceed the retry timeout
-					elapsed := time.Since(*first458TimeRedirect)
+					// Calculate remaining time and adjust retry interval if needed
 					remainingTime := retryTimeout - elapsed
+					backoffDuration := retryInterval
 					if backoffDuration > remainingTime {
 						backoffDuration = remainingTime
 					}
@@ -595,7 +584,7 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 					// Mark this URL as rate-limited to prevent other concurrent requests
 					globalRateLimitTracker.markRateLimited(locationStr, rateLimitCooldown)
 
-					log.Printf("[iptv-proxy] %v | HLS redirect: Rate limit (458) detected on attempt %d, backing off for %v (retrying for %v more)\n",
+					log.Printf("[iptv-proxy] %v | HLS redirect: Rate limit (458) detected on attempt %d, retrying in %v (retrying for %v more)\n",
 						time.Now().Format("2006/01/02 - 15:04:05"), redirectAttempt, backoffDuration, remainingTime-backoffDuration)
 					time.Sleep(backoffDuration)
 					continue
