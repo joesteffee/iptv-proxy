@@ -43,14 +43,12 @@ var sharedHTTPClient = &http.Client{
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   50, // Increased for better connection reuse per host
+		MaxIdleConnsPerHost:   10,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		DisableKeepAlives:     false,
 		ForceAttemptHTTP2:     true,
-		// Enable connection reuse for better performance
-		DisableCompression: false, // Allow compression if upstream supports it
 	},
 	Timeout: 0, // No overall timeout - streaming can take a long time
 }
@@ -600,10 +598,7 @@ func (c *Config) streamDirect(ctx *gin.Context, oriURL *url.URL, rangeHeader str
 	}
 	defer resp.Body.Close()
 
-	// Merge response headers, filtering out problematic ones
-	mergeResponseHeader(ctx.Writer.Header(), resp.Header)
-	
-	// Set status code (important for 206 Partial Content responses)
+	mergeHttpHeader(ctx.Writer.Header(), resp.Header)
 	ctx.Status(resp.StatusCode)
 	
 	// For Range requests, ensure Accept-Ranges is set if not already present
@@ -645,65 +640,13 @@ func (vs values) contains(s string) bool {
 	return false
 }
 
-// Headers that should not be forwarded from client to upstream
-var skipRequestHeaders = map[string]bool{
-	"Connection":          true,
-	"Keep-Alive":          true,
-	"Transfer-Encoding":   true,
-	"Content-Length":      true,
-	"Upgrade":             true,
-	"Proxy-Authorization": true,
-	"Proxy-Authenticate":  true,
-	"Te":                  true,
-	"Trailer":             true,
-}
-
-// Headers that should not be forwarded from upstream to client
-var skipResponseHeaders = map[string]bool{
-	"Connection":          true,
-	"Keep-Alive":          true,
-	"Transfer-Encoding":   true,
-	"Upgrade":             true,
-	"Proxy-Authenticate":  true,
-	"Proxy-Authorization": true,
-	"Te":                  true,
-	"Trailer":             true,
-	"Content-Encoding":    true, // Let the client handle encoding
-}
-
 func mergeHttpHeader(dst, src http.Header) {
 	for k, vv := range src {
-		// Skip headers that shouldn't be forwarded
-		if skipRequestHeaders[k] {
-			continue
-		}
 		for _, v := range vv {
 			if values(dst.Values(k)).contains(v) {
 				continue
 			}
 			dst.Add(k, v)
-		}
-	}
-}
-
-// mergeResponseHeader merges response headers from upstream to client,
-// filtering out headers that shouldn't be forwarded
-func mergeResponseHeader(dst, src http.Header) {
-	for k, vv := range src {
-		// Skip headers that shouldn't be forwarded
-		if skipResponseHeaders[k] {
-			continue
-		}
-		// For Content-Length, only forward if it's not a Range request
-		// (Range requests will have Content-Range instead)
-		if k == "Content-Length" {
-			// Check if this is a partial content response
-			if _, hasRange := src["Content-Range"]; hasRange {
-				continue // Don't forward Content-Length for partial content
-			}
-		}
-		for _, v := range vv {
-			dst.Set(k, v) // Use Set instead of Add to avoid duplicates
 		}
 	}
 }
