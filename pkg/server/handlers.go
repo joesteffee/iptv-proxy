@@ -85,6 +85,282 @@ var globalRateLimitTracker = &rateLimitTracker{
 	rateLimited: make(map[string]time.Time),
 }
 
+// streamCacheEntry represents a cached media file
+type streamCacheEntry struct {
+	mu           sync.RWMutex
+	url          string
+	data         []byte
+	contentType  string
+	contentLength int64
+	activeClients int
+	fetching     bool
+	fetchComplete bool
+	fetchErr     error
+	headers      http.Header
+}
+
+// streamCache manages cached media streams
+type streamCache struct {
+	mu     sync.RWMutex
+	entries map[string]*streamCacheEntry
+}
+
+var globalStreamCache = &streamCache{
+	entries: make(map[string]*streamCacheEntry),
+}
+
+// getOrCreateEntry gets an existing cache entry or creates a new one
+func (sc *streamCache) getOrCreateEntry(urlStr string) *streamCacheEntry {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	entry, exists := sc.entries[urlStr]
+	if !exists {
+		entry = &streamCacheEntry{
+			url:          urlStr,
+			data:         make([]byte, 0),
+			activeClients: 0,
+			fetching:     false,
+			fetchComplete: false,
+			headers:      make(http.Header),
+		}
+		sc.entries[urlStr] = entry
+	}
+	return entry
+}
+
+// removeEntry removes a cache entry when no clients are using it
+func (sc *streamCache) removeEntry(urlStr string) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	delete(sc.entries, urlStr)
+}
+
+// addClient increments the client count for an entry
+func (e *streamCacheEntry) addClient() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.activeClients++
+}
+
+// removeClient decrements the client count and returns true if no clients remain
+func (e *streamCacheEntry) removeClient() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.activeClients--
+	return e.activeClients == 0
+}
+
+// fetchFullFile fetches the entire file from the remote server in the background
+func (e *streamCacheEntry) fetchFullFile(client *http.Client, urlStr string) {
+	e.mu.Lock()
+	if e.fetching || e.fetchComplete {
+		e.mu.Unlock()
+		return
+	}
+	e.fetching = true
+	e.mu.Unlock()
+
+	go func() {
+		const rateLimitStatusCode = 458
+		const retryInterval = 5 * time.Second
+		retryTimeout := 10 * time.Minute // Default retry timeout for background fetch
+
+		var resp *http.Response
+		var first458Time *time.Time
+		attempt := 0
+
+		for {
+			attempt++
+			
+			// Check if this URL is currently rate-limited
+			globalRateLimitTracker.waitIfRateLimited(urlStr, retryInterval)
+			
+			req, err := http.NewRequest("GET", urlStr, nil)
+			if err != nil {
+				e.mu.Lock()
+				e.fetchErr = err
+				e.fetching = false
+				e.mu.Unlock()
+				return
+			}
+
+			// Don't forward Range header for full file fetch
+			req.Header.Set("User-Agent", "iptv-proxy-cache")
+
+			resp, err = client.Do(req)
+			if err != nil {
+				e.mu.Lock()
+				e.fetchErr = err
+				e.fetching = false
+				e.mu.Unlock()
+				return
+			}
+
+			// Check for rate limiting (458) response
+			if resp.StatusCode == rateLimitStatusCode {
+				resp.Body.Close()
+
+				if first458Time == nil {
+					now := time.Now()
+					first458Time = &now
+				}
+
+				elapsed := time.Since(*first458Time)
+				if elapsed >= retryTimeout {
+					e.mu.Lock()
+					e.fetchErr = fmt.Errorf("rate limit persisted for %v", retryTimeout)
+					e.fetching = false
+					e.mu.Unlock()
+					return
+				}
+
+				remainingTime := retryTimeout - elapsed
+				backoffDuration := retryInterval
+				if backoffDuration > remainingTime {
+					backoffDuration = remainingTime
+				}
+
+				globalRateLimitTracker.markRateLimited(urlStr, 30*time.Second)
+				time.Sleep(backoffDuration)
+				continue
+			}
+
+			// Check for successful status code
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				resp.Body.Close()
+				e.mu.Lock()
+				e.fetchErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+				e.fetching = false
+				e.mu.Unlock()
+				return
+			}
+
+			// Success - read the full response
+			e.mu.Lock()
+			e.headers = make(http.Header)
+			mergeResponseHeader(e.headers, resp.Header)
+			e.contentType = resp.Header.Get("Content-Type")
+			e.contentLength = resp.ContentLength
+			e.mu.Unlock()
+
+			// Read the entire body
+			data, err := ioutil.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			e.mu.Lock()
+			if err != nil {
+				e.fetchErr = err
+				e.fetching = false
+			} else {
+				e.data = data
+				if e.contentLength == -1 {
+					e.contentLength = int64(len(data))
+				}
+				e.fetchComplete = true
+				e.fetching = false
+				log.Printf("[iptv-proxy] %v | Cached full file: %s (%d bytes)\n",
+					time.Now().Format("2006/01/02 - 15:04:05"), urlStr, len(data))
+			}
+			e.mu.Unlock()
+			return
+		}
+	}()
+}
+
+// getRange returns the requested byte range from cache
+func (e *streamCacheEntry) getRange(start, end int64) ([]byte, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	if e.fetchErr != nil {
+		return nil, e.fetchErr
+	}
+
+	if !e.fetchComplete {
+		// Cache not ready yet
+		return nil, fmt.Errorf("cache not ready")
+	}
+
+	if start < 0 {
+		start = 0
+	}
+	if end >= int64(len(e.data)) {
+		end = int64(len(e.data)) - 1
+	}
+	if start > end {
+		return nil, fmt.Errorf("invalid range")
+	}
+
+	return e.data[start : end+1], nil
+}
+
+// parseRangeHeader parses the Range header and returns start and end byte positions
+// Returns -1, -1 if no valid range is found
+func parseRangeHeader(rangeHeader string, contentLength int64) (start, end int64, err error) {
+	if rangeHeader == "" {
+		return -1, -1, nil
+	}
+
+	// Range header format: "bytes=start-end" or "bytes=start-"
+	if !strings.HasPrefix(rangeHeader, "bytes=") {
+		return -1, -1, fmt.Errorf("invalid range header format")
+	}
+
+	rangeSpec := strings.TrimPrefix(rangeHeader, "bytes=")
+	parts := strings.Split(rangeSpec, "-")
+	if len(parts) != 2 {
+		return -1, -1, fmt.Errorf("invalid range spec")
+	}
+
+	var startVal, endVal int64
+
+	if parts[0] != "" {
+		_, err := fmt.Sscanf(parts[0], "%d", &startVal)
+		if err != nil {
+			return -1, -1, fmt.Errorf("invalid start value: %v", err)
+		}
+	} else {
+		// Suffix range: "bytes=-suffix" means last suffix bytes
+		if parts[1] != "" {
+			var suffix int64
+			_, err := fmt.Sscanf(parts[1], "%d", &suffix)
+			if err != nil {
+				return -1, -1, fmt.Errorf("invalid suffix value: %v", err)
+			}
+			startVal = contentLength - suffix
+			if startVal < 0 {
+				startVal = 0
+			}
+			endVal = contentLength - 1
+			return startVal, endVal, nil
+		}
+		return -1, -1, fmt.Errorf("invalid range spec")
+	}
+
+	if parts[1] != "" {
+		_, err := fmt.Sscanf(parts[1], "%d", &endVal)
+		if err != nil {
+			return -1, -1, fmt.Errorf("invalid end value: %v", err)
+		}
+	} else {
+		// Open-ended range: "bytes=start-" means from start to end
+		endVal = contentLength - 1
+	}
+
+	if startVal < 0 {
+		startVal = 0
+	}
+	if endVal >= contentLength {
+		endVal = contentLength - 1
+	}
+	if startVal > endVal {
+		return -1, -1, fmt.Errorf("invalid range: start > end")
+	}
+
+	return startVal, endVal, nil
+}
+
 // waitIfRateLimited checks if a URL is currently rate-limited and waits if necessary
 // Returns true if we should skip the request (rate limit active), false otherwise
 func (rlt *rateLimitTracker) waitIfRateLimited(url string, maxWait time.Duration) bool {
@@ -160,6 +436,91 @@ func (c *Config) m3u8ReverseProxy(ctx *gin.Context) {
 
 func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 	client := sharedHTTPClient
+	urlStr := oriURL.String()
+
+	// Get or create cache entry for this URL
+	cacheEntry := globalStreamCache.getOrCreateEntry(urlStr)
+	cacheEntry.addClient()
+	
+	// Ensure background fetch is started
+	cacheEntry.fetchFullFile(client, urlStr)
+
+	// Clean up when client disconnects
+	defer func() {
+		if cacheEntry.removeClient() {
+			// No more clients, remove from cache
+			globalStreamCache.removeEntry(urlStr)
+			log.Printf("[iptv-proxy] %v | Removed cache entry (no active clients): %s\n",
+				time.Now().Format("2006/01/02 - 15:04:05"), urlStr)
+		}
+	}()
+
+	// Check if we have a Range request
+	rangeHeader := ctx.Request.Header.Get("Range")
+	
+	// Try to serve from cache if available
+	cacheEntry.mu.RLock()
+	cacheReady := cacheEntry.fetchComplete
+	cacheErr := cacheEntry.fetchErr
+	contentLength := cacheEntry.contentLength
+	cacheEntry.mu.RUnlock()
+
+	if cacheReady && cacheErr == nil {
+		// Cache is ready, serve from cache
+		if rangeHeader != "" {
+			// Parse range request
+			start, end, err := parseRangeHeader(rangeHeader, contentLength)
+			if err != nil {
+				ctx.AbortWithStatus(http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
+
+			// Get range from cache
+			data, err := cacheEntry.getRange(start, end)
+			if err != nil {
+				// Range not available in cache, fall through to direct fetch
+				log.Printf("[iptv-proxy] %v | Range not in cache, fetching directly: %s\n",
+					time.Now().Format("2006/01/02 - 15:04:05"), urlStr)
+			} else {
+				// Serve from cache
+				cacheEntry.mu.RLock()
+				mergeResponseHeader(ctx.Writer.Header(), cacheEntry.headers)
+				cacheEntry.mu.RUnlock()
+				
+				ctx.Writer.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, contentLength))
+				ctx.Writer.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+				ctx.Status(http.StatusPartialContent)
+				ctx.Data(http.StatusPartialContent, cacheEntry.contentType, data)
+				return
+			}
+		} else {
+			// Full file request, serve from cache
+			cacheEntry.mu.RLock()
+			mergeResponseHeader(ctx.Writer.Header(), cacheEntry.headers)
+			data := cacheEntry.data
+			contentType := cacheEntry.contentType
+			cacheEntry.mu.RUnlock()
+			
+			ctx.Status(http.StatusOK)
+			if contentType != "" {
+				ctx.Writer.Header().Set("Content-Type", contentType)
+			}
+			ctx.Writer.Header().Set("Content-Length", fmt.Sprintf("%d", contentLength))
+			ctx.Writer.Header().Set("Accept-Ranges", "bytes")
+			
+			ctx.Data(http.StatusOK, contentType, data)
+			return
+		}
+	}
+
+	// Cache not ready or error - fall back to direct streaming
+	// This ensures clients can still stream even while cache is being populated
+	c.streamDirect(ctx, oriURL, rangeHeader)
+}
+
+// streamDirect handles direct streaming when cache is not available
+func (c *Config) streamDirect(ctx *gin.Context, oriURL *url.URL, rangeHeader string) {
+	client := sharedHTTPClient
 
 	const rateLimitStatusCode = 458
 	const retryInterval = 5 * time.Second // Retry every 5 seconds after 458 response
@@ -185,6 +546,7 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 			return
 		}
 
+		// Forward headers including Range if present
 		mergeHttpHeader(req.Header, ctx.Request.Header)
 
 		resp, err = client.Do(req)
@@ -236,13 +598,24 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 	}
 	defer resp.Body.Close()
 
-	mergeHttpHeader(ctx.Writer.Header(), resp.Header)
+	// Merge response headers, filtering out problematic ones
+	mergeResponseHeader(ctx.Writer.Header(), resp.Header)
 	ctx.Status(resp.StatusCode)
-	// Use 128KB buffer (4x the default 32KB) to reduce number of requests
-	buf := make([]byte, 128*1024)
+	
+	// For Range requests, ensure Accept-Ranges is set if not already present
+	if rangeHeader != "" && ctx.Writer.Header().Get("Accept-Ranges") == "" {
+		ctx.Writer.Header().Set("Accept-Ranges", "bytes")
+	}
+	
+	// Use 256KB buffer for better streaming performance and fewer syscalls
+	// This reduces the number of read/write operations
+	buf := make([]byte, 256*1024)
+	
+	// Stream the response body efficiently
 	ctx.Stream(func(w io.Writer) bool {
-		io.CopyBuffer(w, resp.Body, buf) // nolint: errcheck
-		return false
+		_, err := io.CopyBuffer(w, resp.Body, buf)
+		// Return false to stop streaming on error or EOF
+		return err == nil
 	})
 }
 
@@ -268,13 +641,69 @@ func (vs values) contains(s string) bool {
 	return false
 }
 
+// Headers that should not be forwarded from client to upstream
+var skipRequestHeaders = map[string]bool{
+	"Connection":          true,
+	"Keep-Alive":          true,
+	"Transfer-Encoding":   true,
+	"Content-Length":      true,
+	"Upgrade":             true,
+	"Proxy-Authorization": true,
+	"Proxy-Authenticate":  true,
+	"Te":                  true,
+	"Trailer":             true,
+}
+
+// Headers that should not be forwarded from upstream to client
+var skipResponseHeaders = map[string]bool{
+	"Connection":          true,
+	"Keep-Alive":          true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
+	"Proxy-Authenticate":  true,
+	"Proxy-Authorization": true,
+	"Te":                  true,
+	"Trailer":             true,
+	"Content-Encoding":    true, // Let the client handle encoding
+}
+
 func mergeHttpHeader(dst, src http.Header) {
 	for k, vv := range src {
+		// Skip headers that shouldn't be forwarded
+		if skipRequestHeaders[k] {
+			continue
+		}
 		for _, v := range vv {
 			if values(dst.Values(k)).contains(v) {
 				continue
 			}
 			dst.Add(k, v)
+		}
+	}
+}
+
+// mergeResponseHeader merges response headers from upstream to client,
+// filtering out headers that shouldn't be forwarded
+func mergeResponseHeader(dst, src http.Header) {
+	for k, vv := range src {
+		// Skip headers that shouldn't be forwarded
+		if skipResponseHeaders[k] {
+			continue
+		}
+		// For Content-Length, only forward if it's not a Range request
+		// (Range requests will have Content-Range instead)
+		if k == "Content-Length" {
+			// Check if this is a partial content response
+			if _, hasRange := src["Content-Range"]; hasRange {
+				continue // Don't forward Content-Length for partial content
+			}
+		}
+		for _, v := range vv {
+			// Check for duplicates before adding, similar to mergeHttpHeader
+			if values(dst.Values(k)).contains(v) {
+				continue
+			}
+			dst.Add(k, v) // Use Add to preserve multiple values (e.g., Set-Cookie)
 		}
 	}
 }
