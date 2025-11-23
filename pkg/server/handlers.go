@@ -168,15 +168,17 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 
 	urlStr := oriURL.String()
 
-	// Check if this URL is currently rate-limited and wait if necessary
-	globalRateLimitTracker.waitIfRateLimited(urlStr, retryInterval)
-
 	var resp *http.Response
 	var first458Time *time.Time
 	attempt := 0
 
 	for {
 		attempt++
+		
+		// Check if this URL is currently rate-limited and wait if necessary (transparent to client)
+		// This prevents duplicate requests but doesn't block the client connection
+		globalRateLimitTracker.waitIfRateLimited(urlStr, retryInterval)
+		
 		req, err := http.NewRequest("GET", urlStr, nil)
 		if err != nil {
 			ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
