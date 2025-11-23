@@ -448,9 +448,6 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 
 	urlStr := oriURL.String()
 
-	// Check if this URL is currently rate-limited and wait if necessary
-	globalRateLimitTracker.waitIfRateLimited(urlStr, retryInterval)
-
 	var resp *http.Response
 	var first458Time *time.Time
 	attempt := 0
@@ -458,6 +455,11 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 	// Retry loop for initial request
 	for {
 		attempt++
+		
+		// Check if this URL is currently rate-limited and wait if necessary (transparent to client)
+		// This prevents duplicate requests but doesn't block the client connection
+		globalRateLimitTracker.waitIfRateLimited(urlStr, retryInterval)
+		
 		req, err := http.NewRequest("GET", urlStr, nil)
 		if err != nil {
 			ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
@@ -529,9 +531,6 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 
 			locationStr := location.String()
 
-			// Check if redirect URL is currently rate-limited and wait if necessary
-			globalRateLimitTracker.waitIfRateLimited(locationStr, retryInterval)
-
 			var hlsResp *http.Response
 			var first458TimeRedirect *time.Time
 			redirectAttempt := 0
@@ -539,6 +538,11 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 			// Retry loop for redirect request
 			for {
 				redirectAttempt++
+				
+				// Check if redirect URL is currently rate-limited and wait if necessary (transparent to client)
+				// This prevents duplicate requests but doesn't block the client connection
+				globalRateLimitTracker.waitIfRateLimited(locationStr, retryInterval)
+				
 				hlsReq, err := http.NewRequest("GET", locationStr, nil)
 				if err != nil {
 					ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
