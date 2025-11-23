@@ -121,11 +121,11 @@ func (c *Config) m3u8ReverseProxy(ctx *gin.Context) {
 func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 	client := &http.Client{}
 
-	const maxRetries = 3
 	const rateLimitStatusCode = 458
 	const initialBackoff = 2 * time.Second
 	const maxBackoff = 60 * time.Second
 	const rateLimitCooldown = 30 * time.Second // How long to mark URL as rate-limited
+	const retryTimeout = 1 * time.Minute        // Keep retrying for 1 minute after first 458
 
 	urlStr := oriURL.String()
 
@@ -133,8 +133,11 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 	globalRateLimitTracker.waitIfRateLimited(urlStr, maxBackoff)
 
 	var resp *http.Response
+	var first458Time *time.Time
+	attempt := 0
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	for {
+		attempt++
 		req, err := http.NewRequest("GET", urlStr, nil)
 		if err != nil {
 			ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
@@ -153,26 +156,42 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 		if resp.StatusCode == rateLimitStatusCode {
 			resp.Body.Close()
 
+			// Track when we first encountered 458
+			if first458Time == nil {
+				now := time.Now()
+				first458Time = &now
+				log.Printf("[iptv-proxy] %v | Rate limit (458) detected, will retry for up to %v\n",
+					time.Now().Format("2006/01/02 - 15:04:05"), retryTimeout)
+			}
+
+			// Check if we've exceeded the retry timeout
+			if time.Since(*first458Time) >= retryTimeout {
+				log.Printf("[iptv-proxy] %v | Rate limit (458) persisted for %v, returning error after %d attempts\n",
+					time.Now().Format("2006/01/02 - 15:04:05"), retryTimeout, attempt)
+				ctx.Status(rateLimitStatusCode)
+				return
+			}
+
 			// Calculate exponential backoff: 2s, 4s, 8s, etc., capped at maxBackoff
 			backoffDuration := initialBackoff * time.Duration(1<<uint(attempt-1))
 			if backoffDuration > maxBackoff {
 				backoffDuration = maxBackoff
 			}
 
+			// Ensure we don't exceed the retry timeout
+			elapsed := time.Since(*first458Time)
+			remainingTime := retryTimeout - elapsed
+			if backoffDuration > remainingTime {
+				backoffDuration = remainingTime
+			}
+
 			// Mark this URL as rate-limited to prevent other concurrent requests
 			globalRateLimitTracker.markRateLimited(urlStr, rateLimitCooldown)
 
-			if attempt < maxRetries {
-				log.Printf("[iptv-proxy] %v | Rate limit (458) detected on attempt %d/%d, backing off for %v\n",
-					time.Now().Format("2006/01/02 - 15:04:05"), attempt, maxRetries, backoffDuration)
-				time.Sleep(backoffDuration)
-				continue
-			}
-			// Max retries exceeded, return the 458 status
-			log.Printf("[iptv-proxy] %v | Rate limit (458) persisted after %d attempts, returning error\n",
-				time.Now().Format("2006/01/02 - 15:04:05"), maxRetries)
-			ctx.Status(rateLimitStatusCode)
-			return
+			log.Printf("[iptv-proxy] %v | Rate limit (458) detected on attempt %d, backing off for %v (retrying for %v more)\n",
+				time.Now().Format("2006/01/02 - 15:04:05"), attempt, backoffDuration, remainingTime-backoffDuration)
+			time.Sleep(backoffDuration)
+			continue
 		}
 
 		// Success or non-458 error - clear rate limit tracking and break out of retry loop
