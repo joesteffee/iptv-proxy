@@ -24,6 +24,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -33,6 +34,45 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// sharedHTTPClient is a shared HTTP client with optimized settings for connection reuse
+var sharedHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		DisableKeepAlives:     false,
+		ForceAttemptHTTP2:     true,
+	},
+	Timeout: 0, // No overall timeout - streaming can take a long time
+}
+
+// sharedHTTPClientHLS is similar but configured for HLS redirects
+var sharedHTTPClientHLS = &http.Client{
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		DisableKeepAlives:     false,
+		ForceAttemptHTTP2:     true,
+	},
+	Timeout: 0,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
 
 // rateLimitTracker tracks URLs that are currently rate-limited
 // to avoid making duplicate requests to the same URL
@@ -119,7 +159,7 @@ func (c *Config) m3u8ReverseProxy(ctx *gin.Context) {
 }
 
 func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
-	client := &http.Client{}
+	client := sharedHTTPClient
 
 	const rateLimitStatusCode = 458
 	const initialBackoff = 2 * time.Second
