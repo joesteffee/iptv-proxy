@@ -598,7 +598,8 @@ func (c *Config) streamDirect(ctx *gin.Context, oriURL *url.URL, rangeHeader str
 	}
 	defer resp.Body.Close()
 
-	mergeHttpHeader(ctx.Writer.Header(), resp.Header)
+	// Merge response headers, filtering out problematic ones
+	mergeResponseHeader(ctx.Writer.Header(), resp.Header)
 	ctx.Status(resp.StatusCode)
 	
 	// For Range requests, ensure Accept-Ranges is set if not already present
@@ -698,7 +699,11 @@ func mergeResponseHeader(dst, src http.Header) {
 			}
 		}
 		for _, v := range vv {
-			dst.Set(k, v) // Use Set instead of Add to avoid duplicates
+			// Check for duplicates before adding, similar to mergeHttpHeader
+			if values(dst.Values(k)).contains(v) {
+				continue
+			}
+			dst.Add(k, v) // Use Add to preserve multiple values (e.g., Set-Cookie)
 		}
 	}
 }
