@@ -71,6 +71,11 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		rateLimitRetryTimeout := viper.GetInt("rate-limit-retry-timeout")
+		if rateLimitRetryTimeout == 0 {
+			rateLimitRetryTimeout = 10 // Default to 10 minutes
+		}
+
 		conf := &config.ProxyConfig{
 			HostConfig: &config.HostConfiguration{
 				Hostname: viper.GetString("hostname"),
@@ -89,6 +94,7 @@ var rootCmd = &cobra.Command{
 			CustomEndpoint:       viper.GetString("custom-endpoint"),
 			CustomId:             viper.GetString("custom-id"),
 			XtreamGenerateApiGet: viper.GetBool("xtream-api-get"),
+			RateLimitRetryTimeout: rateLimitRetryTimeout,
 		}
 
 		if conf.AdvertisedPort == 0 {
@@ -137,6 +143,7 @@ func init() {
 	rootCmd.Flags().String("xtream-base-url", "", "Xtream-code base url e.g(http://expample.tv:8080)")
 	rootCmd.Flags().Int("m3u-cache-expiration", 1, "M3U cache expiration in hour")
 	rootCmd.Flags().BoolP("xtream-api-get", "", false, "Generate get.php from xtream API instead of get.php original endpoint")
+	rootCmd.Flags().Int("rate-limit-retry-timeout", 10, "Rate limit retry timeout in minutes (default: 10, env: RATE_LIMIT_RETRY_TIMEOUT)")
 
 	if e := viper.BindPFlags(rootCmd.Flags()); e != nil {
 		log.Fatal("error binding PFlags to viper")
