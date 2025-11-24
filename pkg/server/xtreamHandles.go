@@ -314,6 +314,7 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 			streamID := streamElem.FieldByName("ID")
 			streamEPG := streamElem.FieldByName("EPGChannelID")
 			streamIcon := streamElem.FieldByName("Icon")
+			streamContainerExt := streamElem.FieldByName("ContainerExtension")
 			
 			streamNameStr := ""
 			if streamName.IsValid() {
@@ -331,6 +332,17 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 			if streamIcon.IsValid() {
 				streamIconStr = streamIcon.String()
 			}
+			streamContainerExtStr := ""
+			if streamContainerExt.IsValid() {
+				streamContainerExtStr = streamContainerExt.String()
+			}
+			
+			// Use container_extension from API if available, otherwise fall back to output parameter
+			liveExtension := extension
+			if streamContainerExtStr != "" {
+				liveExtension = "." + streamContainerExtStr
+			}
+			
 			track := m3u.Track{Name: streamNameStr, Length: -1, URI: "", Tags: nil}
 
 			//TODO: Add more tag if needed.
@@ -347,7 +359,7 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 				track.Tags = append(track.Tags, m3u.Tag{Name: "group-title", Value: categoryNameStr})
 			}
 
-			track.URI = fmt.Sprintf("%s/%s%s/%s/%s%s", c.XtreamBaseURL, prefix, c.XtreamUser, c.XtreamPassword, streamIDStr, extension)
+			track.URI = fmt.Sprintf("%s/%s%s/%s/%s%s", c.XtreamBaseURL, prefix, c.XtreamUser, c.XtreamPassword, streamIDStr, liveExtension)
 			playlist.Tracks = append(playlist.Tracks, track)
 			totalTracks++
 		}
@@ -470,6 +482,7 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 			movieID := movieElem.FieldByName("ID")
 			movieEPG := movieElem.FieldByName("EPGChannelID")
 			movieIcon := movieElem.FieldByName("Icon")
+			movieContainerExt := movieElem.FieldByName("ContainerExtension")
 			
 			movieNameStr := ""
 			if movieName.IsValid() {
@@ -486,6 +499,16 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 			movieIconStr := ""
 			if movieIcon.IsValid() {
 				movieIconStr = movieIcon.String()
+			}
+			movieContainerExtStr := ""
+			if movieContainerExt.IsValid() {
+				movieContainerExtStr = movieContainerExt.String()
+			}
+			
+			// Use container_extension from API if available, otherwise fall back to output parameter
+			movieExtension := extension
+			if movieContainerExtStr != "" {
+				movieExtension = "." + movieContainerExtStr
 			}
 			
 			track := m3u.Track{Name: movieNameStr, Length: -1, URI: "", Tags: nil}
@@ -504,7 +527,7 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 			}
 
 			// Movies use /movie/ prefix
-			track.URI = fmt.Sprintf("%s/movie/%s/%s/%s%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, movieIDStr, extension)
+			track.URI = fmt.Sprintf("%s/movie/%s/%s/%s%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, movieIDStr, movieExtension)
 			playlist.Tracks = append(playlist.Tracks, track)
 			vodTracks++
 			totalTracks++
@@ -626,6 +649,7 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 			serieName := serieElem.FieldByName("Name")
 			serieID := serieElem.FieldByName("SeriesID")
 			serieCover := serieElem.FieldByName("Cover")
+			serieContainerExt := serieElem.FieldByName("ContainerExtension")
 			
 			serieNameStr := ""
 			if serieName.IsValid() {
@@ -638,6 +662,16 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 			serieCoverStr := ""
 			if serieCover.IsValid() {
 				serieCoverStr = serieCover.String()
+			}
+			serieContainerExtStr := ""
+			if serieContainerExt.IsValid() {
+				serieContainerExtStr = serieContainerExt.String()
+			}
+			
+			// Use container_extension from API if available, otherwise fall back to output parameter
+			seriesExtension := extension
+			if serieContainerExtStr != "" {
+				seriesExtension = "." + serieContainerExtStr
 			}
 			
 			track := m3u.Track{Name: serieNameStr, Length: -1, URI: "", Tags: nil}
@@ -653,7 +687,7 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 			}
 
 			// Series use /series/ prefix, SeriesInfo has SeriesID field
-			track.URI = fmt.Sprintf("%s/series/%s/%s/%s%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, serieIDStr, extension)
+			track.URI = fmt.Sprintf("%s/series/%s/%s/%s%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, serieIDStr, seriesExtension)
 			playlist.Tracks = append(playlist.Tracks, track)
 			seriesTracks++
 			totalTracks++
@@ -797,10 +831,12 @@ func (c *Config) xtreamGet(ctx *gin.Context) {
 }
 
 // getExtensionFromOutput maps Xtream output formats to file extensions
-// Returns the extension with a leading dot, or empty string if output is empty
+// This is used as a fallback when container_extension is not available from the API
+// Returns the extension with a leading dot, defaults to ".ts" (mpegts) if output is empty
 func getExtensionFromOutput(output string) string {
+	// Default to mpegts (.ts) if no output specified
 	if output == "" {
-		return ""
+		return ".ts"
 	}
 	
 	// Map common output formats to standard file extensions
