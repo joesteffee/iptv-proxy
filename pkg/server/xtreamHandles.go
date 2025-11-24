@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -142,20 +143,87 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Pla
 	log.Printf("[iptv-proxy] DEBUG: Starting xtreamGenerateM3u with extension: %s\n", extension)
 	
 	log.Printf("[iptv-proxy] DEBUG: Creating Xtream client with user: %s, baseURL: %s\n", c.XtreamUser.String(), c.XtreamBaseURL)
-	client, err := xtreamapi.New(c.XtreamUser.String(), c.XtreamPassword.String(), c.XtreamBaseURL, ctx.Request.UserAgent())
+	
+	// Always use a proper browser-like User-Agent for Xtream API calls
+	// Cloudflare blocks suspicious User-Agents like "python-requests" or "go.xstream-codes"
+	// We ignore the incoming User-Agent to ensure we always use a browser-like one
+	userAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	log.Printf("[iptv-proxy] DEBUG: Using User-Agent for Xtream API: %s (ignoring client User-Agent: %s)\n", userAgent, ctx.Request.UserAgent())
+	
+	// Retry logic for Cloudflare 520 errors (often transient)
+	maxRetries := 3
+	var client *xtreamapi.Client
+	var err error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		client, err = xtreamapi.New(c.XtreamUser.String(), c.XtreamPassword.String(), c.XtreamBaseURL, userAgent)
+		if err == nil {
+			log.Printf("[iptv-proxy] DEBUG: Xtream client created successfully\n")
+			break
+		}
+		
+		// Check if it's a 520 error (Cloudflare) - these are often transient
+		if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
+			if attempt < maxRetries {
+				waitTime := time.Duration(attempt) * 2 * time.Second
+				log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error on attempt %d/%d, retrying in %v: %v\n", attempt, maxRetries, waitTime, err)
+				time.Sleep(waitTime)
+				continue
+			}
+		}
+		
+		log.Printf("[iptv-proxy] ERROR: Failed to create Xtream client (attempt %d/%d): %v\n", attempt, maxRetries, err)
+		if attempt == maxRetries {
+			return nil, err
+		}
+	}
+	
 	if err != nil {
-		log.Printf("[iptv-proxy] ERROR: Failed to create Xtream client: %v\n", err)
+		log.Printf("[iptv-proxy] ERROR: Failed to create Xtream client after %d attempts: %v\n", maxRetries, err)
 		return nil, err
 	}
-	log.Printf("[iptv-proxy] DEBUG: Xtream client created successfully\n")
 
 	log.Printf("[iptv-proxy] DEBUG: Fetching live categories...\n")
-	cat, err := client.GetLiveCategories()
+	
+	// Retry logic for API calls that might fail due to Cloudflare (520 errors are often transient)
+	catRetries := 3
+	var cat interface{}
+	for attempt := 1; attempt <= catRetries; attempt++ {
+		categories, getErr := client.GetLiveCategories()
+		if getErr == nil {
+			cat = categories
+			err = nil
+			break
+		}
+		err = getErr
+		
+		// Check if it's a 520 error (Cloudflare) - these are often transient
+		if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
+			if attempt < catRetries {
+				waitTime := time.Duration(attempt) * 2 * time.Second
+				log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting live categories (attempt %d/%d), retrying in %v: %v\n", attempt, catRetries, waitTime, err)
+				time.Sleep(waitTime)
+				continue
+			}
+		}
+		
+		log.Printf("[iptv-proxy] ERROR: Failed to get live categories (attempt %d/%d): %v\n", attempt, catRetries, err)
+		if attempt == catRetries {
+			return nil, err
+		}
+	}
+	
 	if err != nil {
-		log.Printf("[iptv-proxy] ERROR: Failed to get live categories: %v\n", err)
+		log.Printf("[iptv-proxy] ERROR: Failed to get live categories after %d attempts: %v\n", catRetries, err)
 		return nil, err
 	}
-	log.Printf("[iptv-proxy] DEBUG: Retrieved %d live categories\n", len(cat))
+	
+	// GetLiveCategories returns a slice - use reflection to get length
+	catValueRef := reflect.ValueOf(cat)
+	if catValueRef.Kind() != reflect.Slice {
+		return nil, fmt.Errorf("expected slice from GetLiveCategories, got %T", cat)
+	}
+	catLen := catValueRef.Len()
+	log.Printf("[iptv-proxy] DEBUG: Retrieved %d live categories\n", catLen)
 
 	// this is specific to xtream API,
 	// prefix with "live" if there is an extension.
@@ -169,38 +237,110 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Pla
 	playlist.Tracks = make([]m3u.Track, 0)
 
 	totalTracks := 0
-	for i, category := range cat {
-		// Log progress every 50 categories to reduce log spam
-		if i%50 == 0 || i == len(cat)-1 {
-			log.Printf("[iptv-proxy] DEBUG: Processing category %d/%d: %s (ID: %s) - %d tracks so far\n", i+1, len(cat), category.Name, fmt.Sprint(category.ID), totalTracks)
+	catValue := reflect.ValueOf(cat)
+	for i := 0; i < catValue.Len(); i++ {
+		categoryElem := catValue.Index(i)
+		categoryID := categoryElem.FieldByName("ID")
+		categoryName := categoryElem.FieldByName("Name")
+		
+		categoryIDStr := ""
+		if categoryID.IsValid() {
+			categoryIDStr = fmt.Sprint(categoryID.Interface())
 		}
-		live, err := client.GetLiveStreams(fmt.Sprint(category.ID))
+		categoryNameStr := ""
+		if categoryName.IsValid() {
+			categoryNameStr = categoryName.String()
+		}
+		
+		// Log progress every 50 categories to reduce log spam
+		if i%50 == 0 || i == catValue.Len()-1 {
+			log.Printf("[iptv-proxy] DEBUG: Processing category %d/%d: %s (ID: %s) - %d tracks so far\n", i+1, catValue.Len(), categoryNameStr, categoryIDStr, totalTracks)
+		}
+		
+		// Retry logic for GetLiveStreams (may also fail with 520 errors)
+		var live interface{}
+		streamRetries := 3
+		for attempt := 1; attempt <= streamRetries; attempt++ {
+			streams, streamErr := client.GetLiveStreams(categoryIDStr)
+			if streamErr == nil {
+				live = streams
+				err = nil
+				break
+			}
+			err = streamErr
+			
+			// Check if it's a 520 error (Cloudflare) - these are often transient
+			if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
+				if attempt < streamRetries {
+					waitTime := time.Duration(attempt) * 1 * time.Second
+					log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting streams for category %s (attempt %d/%d), retrying in %v\n", categoryNameStr, attempt, streamRetries, waitTime)
+					time.Sleep(waitTime)
+					continue
+				}
+			}
+			
+			if attempt == streamRetries {
+				log.Printf("[iptv-proxy] ERROR: Failed to get live streams for category %s after %d attempts: %v\n", categoryNameStr, streamRetries, err)
+				return nil, err
+			}
+		}
+		
 		if err != nil {
-			log.Printf("[iptv-proxy] ERROR: Failed to get live streams for category %s: %v\n", category.Name, err)
+			log.Printf("[iptv-proxy] ERROR: Failed to get live streams for category %s: %v\n", categoryNameStr, err)
 			return nil, err
 		}
-		if i%50 == 0 || i == len(cat)-1 {
-			log.Printf("[iptv-proxy] DEBUG: Category %s has %d streams\n", category.Name, len(live))
+		
+		// Convert live to slice using reflection
+		liveValue := reflect.ValueOf(live)
+		if liveValue.Kind() != reflect.Slice {
+			log.Printf("[iptv-proxy] ERROR: Expected slice from GetLiveStreams, got %T\n", live)
+			continue
+		}
+		liveLen := liveValue.Len()
+		if i%50 == 0 || i == catValue.Len()-1 {
+			log.Printf("[iptv-proxy] DEBUG: Category %s has %d streams\n", categoryNameStr, liveLen)
 		}
 
-		for _, stream := range live {
-			track := m3u.Track{Name: stream.Name, Length: -1, URI: "", Tags: nil}
+		for j := 0; j < liveLen; j++ {
+			streamElem := liveValue.Index(j)
+			streamName := streamElem.FieldByName("Name")
+			streamID := streamElem.FieldByName("ID")
+			streamEPG := streamElem.FieldByName("EPGChannelID")
+			streamIcon := streamElem.FieldByName("Icon")
+			
+			streamNameStr := ""
+			if streamName.IsValid() {
+				streamNameStr = streamName.String()
+			}
+			streamIDStr := ""
+			if streamID.IsValid() {
+				streamIDStr = fmt.Sprint(streamID.Interface())
+			}
+			streamEPGStr := ""
+			if streamEPG.IsValid() {
+				streamEPGStr = streamEPG.String()
+			}
+			streamIconStr := ""
+			if streamIcon.IsValid() {
+				streamIconStr = streamIcon.String()
+			}
+			track := m3u.Track{Name: streamNameStr, Length: -1, URI: "", Tags: nil}
 
 			//TODO: Add more tag if needed.
-			if stream.EPGChannelID != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-id", Value: stream.EPGChannelID})
+			if streamEPGStr != "" {
+				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-id", Value: streamEPGStr})
 			}
-			if stream.Name != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-name", Value: stream.Name})
+			if streamNameStr != "" {
+				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-name", Value: streamNameStr})
 			}
-			if stream.Icon != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-logo", Value: stream.Icon})
+			if streamIconStr != "" {
+				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-logo", Value: streamIconStr})
 			}
-			if category.Name != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "group-title", Value: category.Name})
+			if categoryNameStr != "" {
+				track.Tags = append(track.Tags, m3u.Tag{Name: "group-title", Value: categoryNameStr})
 			}
 
-			track.URI = fmt.Sprintf("%s/%s%s/%s/%s%s", c.XtreamBaseURL, prefix, c.XtreamUser, c.XtreamPassword, fmt.Sprint(stream.ID), extension)
+			track.URI = fmt.Sprintf("%s/%s%s/%s/%s%s", c.XtreamBaseURL, prefix, c.XtreamUser, c.XtreamPassword, streamIDStr, extension)
 			playlist.Tracks = append(playlist.Tracks, track)
 			totalTracks++
 		}
@@ -210,45 +350,148 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Pla
 
 	// Fetch VOD (Movies) categories and streams
 	log.Printf("[iptv-proxy] DEBUG: Fetching VOD (Movies) categories...\n")
-	vodCats, err := client.GetVideoOnDemandCategories()
-	if err != nil {
-		log.Printf("[iptv-proxy] ERROR: Failed to get VOD categories: %v\n", err)
-		return nil, err
-	}
-	log.Printf("[iptv-proxy] DEBUG: Retrieved %d VOD categories\n", len(vodCats))
-
-	vodTracks := 0
-	for i, category := range vodCats {
-		if i%50 == 0 || i == len(vodCats)-1 {
-			log.Printf("[iptv-proxy] DEBUG: Processing VOD category %d/%d: %s (ID: %s) - %d VOD tracks so far\n", i+1, len(vodCats), category.Name, fmt.Sprint(category.ID), vodTracks)
+	vodRetries := 3
+	var vodCats interface{}
+	for attempt := 1; attempt <= vodRetries; attempt++ {
+		categories, getErr := client.GetVideoOnDemandCategories()
+		if getErr == nil {
+			vodCats = categories
+			err = nil
+			break
 		}
-		movies, err := client.GetVideoOnDemandStreams(fmt.Sprint(category.ID))
-		if err != nil {
-			log.Printf("[iptv-proxy] ERROR: Failed to get VOD streams for category %s: %v\n", category.Name, err)
+		err = getErr
+		
+		// Check if it's a 520 error (Cloudflare) - these are often transient
+		if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
+			if attempt < vodRetries {
+				waitTime := time.Duration(attempt) * 2 * time.Second
+				log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting VOD categories (attempt %d/%d), retrying in %v: %v\n", attempt, vodRetries, waitTime, err)
+				time.Sleep(waitTime)
+				continue
+			}
+		}
+		
+		log.Printf("[iptv-proxy] ERROR: Failed to get VOD categories (attempt %d/%d): %v\n", attempt, vodRetries, err)
+		if attempt == vodRetries {
 			return nil, err
 		}
-		if i%50 == 0 || i == len(vodCats)-1 {
-			log.Printf("[iptv-proxy] DEBUG: VOD category %s has %d movies\n", category.Name, len(movies))
+	}
+	
+	if err != nil {
+		log.Printf("[iptv-proxy] ERROR: Failed to get VOD categories after %d attempts: %v\n", vodRetries, err)
+		return nil, err
+	}
+	
+	vodCatsValue := reflect.ValueOf(vodCats)
+	if vodCatsValue.Kind() != reflect.Slice {
+		return nil, fmt.Errorf("expected slice from GetVideoOnDemandCategories, got %T", vodCats)
+	}
+	vodCatsLen := vodCatsValue.Len()
+	log.Printf("[iptv-proxy] DEBUG: Retrieved %d VOD categories\n", vodCatsLen)
+
+	vodTracks := 0
+	for i := 0; i < vodCatsLen; i++ {
+		categoryElem := vodCatsValue.Index(i)
+		categoryID := categoryElem.FieldByName("ID")
+		categoryName := categoryElem.FieldByName("Name")
+		
+		categoryIDStr := ""
+		if categoryID.IsValid() {
+			categoryIDStr = fmt.Sprint(categoryID.Interface())
+		}
+		categoryNameStr := ""
+		if categoryName.IsValid() {
+			categoryNameStr = categoryName.String()
+		}
+		
+		if i%50 == 0 || i == vodCatsLen-1 {
+			log.Printf("[iptv-proxy] DEBUG: Processing VOD category %d/%d: %s (ID: %s) - %d VOD tracks so far\n", i+1, vodCatsLen, categoryNameStr, categoryIDStr, vodTracks)
+		}
+		
+		// Retry logic for GetVideoOnDemandStreams
+		var movies interface{}
+		movieRetries := 3
+		for attempt := 1; attempt <= movieRetries; attempt++ {
+			streams, streamErr := client.GetVideoOnDemandStreams(categoryIDStr)
+			if streamErr == nil {
+				movies = streams
+				err = nil
+				break
+			}
+			err = streamErr
+			
+			if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
+				if attempt < movieRetries {
+					waitTime := time.Duration(attempt) * 1 * time.Second
+					log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting VOD streams for category %s (attempt %d/%d), retrying in %v\n", categoryNameStr, attempt, movieRetries, waitTime)
+					time.Sleep(waitTime)
+					continue
+				}
+			}
+			
+			if attempt == movieRetries {
+				log.Printf("[iptv-proxy] ERROR: Failed to get VOD streams for category %s after %d attempts: %v\n", categoryNameStr, movieRetries, err)
+				return nil, err
+			}
+		}
+		
+		if err != nil {
+			log.Printf("[iptv-proxy] ERROR: Failed to get VOD streams for category %s: %v\n", categoryNameStr, err)
+			return nil, err
+		}
+		
+		moviesValue := reflect.ValueOf(movies)
+		if moviesValue.Kind() != reflect.Slice {
+			log.Printf("[iptv-proxy] ERROR: Expected slice from GetVideoOnDemandStreams, got %T\n", movies)
+			continue
+		}
+		moviesLen := moviesValue.Len()
+		
+		if i%50 == 0 || i == vodCatsLen-1 {
+			log.Printf("[iptv-proxy] DEBUG: VOD category %s has %d movies\n", categoryNameStr, moviesLen)
 		}
 
-		for _, movie := range movies {
-			track := m3u.Track{Name: movie.Name, Length: -1, URI: "", Tags: nil}
+		for j := 0; j < moviesLen; j++ {
+			movieElem := moviesValue.Index(j)
+			movieName := movieElem.FieldByName("Name")
+			movieID := movieElem.FieldByName("ID")
+			movieEPG := movieElem.FieldByName("EPGChannelID")
+			movieIcon := movieElem.FieldByName("Icon")
+			
+			movieNameStr := ""
+			if movieName.IsValid() {
+				movieNameStr = movieName.String()
+			}
+			movieIDStr := ""
+			if movieID.IsValid() {
+				movieIDStr = fmt.Sprint(movieID.Interface())
+			}
+			movieEPGStr := ""
+			if movieEPG.IsValid() {
+				movieEPGStr = movieEPG.String()
+			}
+			movieIconStr := ""
+			if movieIcon.IsValid() {
+				movieIconStr = movieIcon.String()
+			}
+			
+			track := m3u.Track{Name: movieNameStr, Length: -1, URI: "", Tags: nil}
 
-			if movie.EPGChannelID != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-id", Value: movie.EPGChannelID})
+			if movieEPGStr != "" {
+				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-id", Value: movieEPGStr})
 			}
-			if movie.Name != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-name", Value: movie.Name})
+			if movieNameStr != "" {
+				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-name", Value: movieNameStr})
 			}
-			if movie.Icon != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-logo", Value: movie.Icon})
+			if movieIconStr != "" {
+				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-logo", Value: movieIconStr})
 			}
-			if category.Name != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "group-title", Value: category.Name})
+			if categoryNameStr != "" {
+				track.Tags = append(track.Tags, m3u.Tag{Name: "group-title", Value: categoryNameStr})
 			}
 
 			// Movies use /movie/ prefix
-			track.URI = fmt.Sprintf("%s/movie/%s/%s/%s%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, fmt.Sprint(movie.ID), extension)
+			track.URI = fmt.Sprintf("%s/movie/%s/%s/%s%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, movieIDStr, extension)
 			playlist.Tracks = append(playlist.Tracks, track)
 			vodTracks++
 			totalTracks++
@@ -258,42 +501,140 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Pla
 
 	// Fetch Series categories and series
 	log.Printf("[iptv-proxy] DEBUG: Fetching Series categories...\n")
-	seriesCats, err := client.GetSeriesCategories()
-	if err != nil {
-		log.Printf("[iptv-proxy] ERROR: Failed to get Series categories: %v\n", err)
-		return nil, err
-	}
-	log.Printf("[iptv-proxy] DEBUG: Retrieved %d Series categories\n", len(seriesCats))
-
-	seriesTracks := 0
-	for i, category := range seriesCats {
-		if i%50 == 0 || i == len(seriesCats)-1 {
-			log.Printf("[iptv-proxy] DEBUG: Processing Series category %d/%d: %s (ID: %s) - %d Series tracks so far\n", i+1, len(seriesCats), category.Name, fmt.Sprint(category.ID), seriesTracks)
+	seriesRetries := 3
+	var seriesCats interface{}
+	for attempt := 1; attempt <= seriesRetries; attempt++ {
+		categories, getErr := client.GetSeriesCategories()
+		if getErr == nil {
+			seriesCats = categories
+			err = nil
+			break
 		}
-		series, err := client.GetSeries(fmt.Sprint(category.ID))
-		if err != nil {
-			log.Printf("[iptv-proxy] ERROR: Failed to get series for category %s: %v\n", category.Name, err)
+		err = getErr
+		
+		// Check if it's a 520 error (Cloudflare) - these are often transient
+		if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
+			if attempt < seriesRetries {
+				waitTime := time.Duration(attempt) * 2 * time.Second
+				log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting Series categories (attempt %d/%d), retrying in %v: %v\n", attempt, seriesRetries, waitTime, err)
+				time.Sleep(waitTime)
+				continue
+			}
+		}
+		
+		log.Printf("[iptv-proxy] ERROR: Failed to get Series categories (attempt %d/%d): %v\n", attempt, seriesRetries, err)
+		if attempt == seriesRetries {
 			return nil, err
 		}
-		if i%50 == 0 || i == len(seriesCats)-1 {
-			log.Printf("[iptv-proxy] DEBUG: Series category %s has %d series\n", category.Name, len(series))
+	}
+	
+	if err != nil {
+		log.Printf("[iptv-proxy] ERROR: Failed to get Series categories after %d attempts: %v\n", seriesRetries, err)
+		return nil, err
+	}
+	
+	seriesCatsValue := reflect.ValueOf(seriesCats)
+	if seriesCatsValue.Kind() != reflect.Slice {
+		return nil, fmt.Errorf("expected slice from GetSeriesCategories, got %T", seriesCats)
+	}
+	seriesCatsLen := seriesCatsValue.Len()
+	log.Printf("[iptv-proxy] DEBUG: Retrieved %d Series categories\n", seriesCatsLen)
+
+	seriesTracks := 0
+	for i := 0; i < seriesCatsLen; i++ {
+		categoryElem := seriesCatsValue.Index(i)
+		categoryID := categoryElem.FieldByName("ID")
+		categoryName := categoryElem.FieldByName("Name")
+		
+		categoryIDStr := ""
+		if categoryID.IsValid() {
+			categoryIDStr = fmt.Sprint(categoryID.Interface())
+		}
+		categoryNameStr := ""
+		if categoryName.IsValid() {
+			categoryNameStr = categoryName.String()
+		}
+		
+		if i%50 == 0 || i == seriesCatsLen-1 {
+			log.Printf("[iptv-proxy] DEBUG: Processing Series category %d/%d: %s (ID: %s) - %d Series tracks so far\n", i+1, seriesCatsLen, categoryNameStr, categoryIDStr, seriesTracks)
+		}
+		
+		// Retry logic for GetSeries
+		var series interface{}
+		seriesStreamRetries := 3
+		for attempt := 1; attempt <= seriesStreamRetries; attempt++ {
+			streams, streamErr := client.GetSeries(categoryIDStr)
+			if streamErr == nil {
+				series = streams
+				err = nil
+				break
+			}
+			err = streamErr
+			
+			if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
+				if attempt < seriesStreamRetries {
+					waitTime := time.Duration(attempt) * 1 * time.Second
+					log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting series for category %s (attempt %d/%d), retrying in %v\n", categoryNameStr, attempt, seriesStreamRetries, waitTime)
+					time.Sleep(waitTime)
+					continue
+				}
+			}
+			
+			if attempt == seriesStreamRetries {
+				log.Printf("[iptv-proxy] ERROR: Failed to get series for category %s after %d attempts: %v\n", categoryNameStr, seriesStreamRetries, err)
+				return nil, err
+			}
+		}
+		
+		if err != nil {
+			log.Printf("[iptv-proxy] ERROR: Failed to get series for category %s: %v\n", categoryNameStr, err)
+			return nil, err
+		}
+		
+		seriesValue := reflect.ValueOf(series)
+		if seriesValue.Kind() != reflect.Slice {
+			log.Printf("[iptv-proxy] ERROR: Expected slice from GetSeries, got %T\n", series)
+			continue
+		}
+		seriesLen := seriesValue.Len()
+		
+		if i%50 == 0 || i == seriesCatsLen-1 {
+			log.Printf("[iptv-proxy] DEBUG: Series category %s has %d series\n", categoryNameStr, seriesLen)
 		}
 
-		for _, serie := range series {
-			track := m3u.Track{Name: serie.Name, Length: -1, URI: "", Tags: nil}
+		for j := 0; j < seriesLen; j++ {
+			serieElem := seriesValue.Index(j)
+			serieName := serieElem.FieldByName("Name")
+			serieID := serieElem.FieldByName("SeriesID")
+			serieCover := serieElem.FieldByName("Cover")
+			
+			serieNameStr := ""
+			if serieName.IsValid() {
+				serieNameStr = serieName.String()
+			}
+			serieIDStr := ""
+			if serieID.IsValid() {
+				serieIDStr = fmt.Sprint(serieID.Interface())
+			}
+			serieCoverStr := ""
+			if serieCover.IsValid() {
+				serieCoverStr = serieCover.String()
+			}
+			
+			track := m3u.Track{Name: serieNameStr, Length: -1, URI: "", Tags: nil}
 
-			if serie.Cover != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-logo", Value: serie.Cover})
+			if serieCoverStr != "" {
+				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-logo", Value: serieCoverStr})
 			}
-			if serie.Name != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-name", Value: serie.Name})
+			if serieNameStr != "" {
+				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-name", Value: serieNameStr})
 			}
-			if category.Name != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "group-title", Value: category.Name})
+			if categoryNameStr != "" {
+				track.Tags = append(track.Tags, m3u.Tag{Name: "group-title", Value: categoryNameStr})
 			}
 
 			// Series use /series/ prefix, SeriesInfo has SeriesID field
-			track.URI = fmt.Sprintf("%s/series/%s/%s/%s%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, fmt.Sprint(serie.SeriesID), extension)
+			track.URI = fmt.Sprintf("%s/series/%s/%s/%s%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, serieIDStr, extension)
 			playlist.Tracks = append(playlist.Tracks, track)
 			seriesTracks++
 			totalTracks++
@@ -359,12 +700,12 @@ func (c *Config) xtreamGet(ctx *gin.Context) {
 			return
 		}
 		
-		// Set User-Agent to match what streaming apps typically use
-		userAgent := ctx.Request.UserAgent()
-		if userAgent == "" {
-			userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
-		}
+		// Always use a proper browser-like User-Agent for Xtream API calls
+		// Cloudflare blocks suspicious User-Agents like "python-requests" or default Go user agents
+		// We ignore the incoming User-Agent to ensure we always use a browser-like one
+		userAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 		req.Header.Set("User-Agent", userAgent)
+		log.Printf("[iptv-proxy] DEBUG: Using User-Agent for Xtream get.php request: %s (ignoring client User-Agent: %s)\n", userAgent, ctx.Request.UserAgent())
 		
 		resp, err := sharedHTTPClient.Do(req)
 		if err != nil {
@@ -884,3 +1225,4 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 
 	ctx.Status(resp.StatusCode)
 }
+
