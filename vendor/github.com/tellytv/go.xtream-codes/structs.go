@@ -540,23 +540,43 @@ func (s *Series) UnmarshalJSON(data []byte) error {
 	type Alias Series
 	aux := &struct {
 		*Alias
+		EpisodesRaw json.RawMessage `json:"episodes"`
 	}{
 		Alias: (*Alias)(s),
 	}
 
-	logInitialError := false
+	// First try to unmarshal everything except episodes
 	initialErr := json.Unmarshal(data, &aux)
-	errMsg := fmt.Sprintf("UnmarshalJSON error for Series: %v", initialErr)
-	dataMsg := fmt.Sprintf("Problematic JSON data for Series: %s", string(data))
-
 	if initialErr != nil {
-		log.Printf("Warning: Failed to unmarshal Series. Using reflective unmarshalling.")
-		if unmarshalErr := unmarshalReflectiveFields(data, s, "Series"); unmarshalErr != nil {
-			logInitialError = true
-		}
+		log.Printf("Warning: Failed to unmarshal Series base fields: %v", initialErr)
 	}
 
-	if logInitialError {
+	// Try to unmarshal episodes as map (expected format)
+	var episodesMap map[string][]SeriesEpisode
+	if err := json.Unmarshal(aux.EpisodesRaw, &episodesMap); err == nil {
+		s.Episodes = episodesMap
+		return nil
+	}
+
+	// If map format fails, try array-of-arrays format
+	var episodesArray [][]SeriesEpisode
+	if err := json.Unmarshal(aux.EpisodesRaw, &episodesArray); err == nil {
+		// Convert array-of-arrays to map using season number from each episode
+		s.Episodes = make(map[string][]SeriesEpisode)
+		for _, seasonEpisodes := range episodesArray {
+			for _, episode := range seasonEpisodes {
+				seasonKey := fmt.Sprintf("%d", int(episode.Season))
+				s.Episodes[seasonKey] = append(s.Episodes[seasonKey], episode)
+			}
+		}
+		return nil
+	}
+
+	// If both formats fail, log error and use reflective unmarshalling
+	log.Printf("Warning: Failed to unmarshal Series.Episodes. Using reflective unmarshalling.")
+	if unmarshalErr := unmarshalReflectiveFields(data, s, "Series"); unmarshalErr != nil {
+		errMsg := fmt.Sprintf("UnmarshalJSON error for Series: %v", unmarshalErr)
+		dataMsg := fmt.Sprintf("Problematic JSON data for Series: %s", string(data))
 		log.Println(errMsg)
 		log.Println(dataMsg)
 	}
