@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -138,5 +139,133 @@ func (r *RedisCache) Close() error {
 	}
 
 	return r.client.Close()
+}
+
+// RefreshMetadata tracks refresh attempts and retry counts
+type RefreshMetadata struct {
+	RetryCount    int       `json:"retry_count"`
+	LastAttempt   time.Time `json:"last_attempt"`
+	NextRefresh   time.Time `json:"next_refresh"`
+	LastSuccess   time.Time `json:"last_success"`
+}
+
+// GetRefreshMetadata retrieves refresh metadata for a cache key
+func (r *RedisCache) GetRefreshMetadata(key string) (*RefreshMetadata, error) {
+	if r == nil {
+		return nil, nil
+	}
+
+	metaKey := r.metaKey(key)
+	var meta RefreshMetadata
+	found, err := r.GetJSON(metaKey, &meta)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+	return &meta, nil
+}
+
+// SetRefreshMetadata stores refresh metadata for a cache key
+func (r *RedisCache) SetRefreshMetadata(key string, meta *RefreshMetadata, ttl time.Duration) error {
+	if r == nil {
+		return nil
+	}
+
+	metaKey := r.metaKey(key)
+	return r.SetJSON(metaKey, meta, ttl)
+}
+
+// IncrementRetryCount increments the retry count for a cache key
+func (r *RedisCache) IncrementRetryCount(key string) (int, error) {
+	if r == nil {
+		return 0, nil
+	}
+
+	meta, err := r.GetRefreshMetadata(key)
+	if err != nil {
+		return 0, err
+	}
+	if meta == nil {
+		meta = &RefreshMetadata{
+			LastAttempt: time.Now(),
+		}
+	}
+
+	meta.RetryCount++
+	meta.LastAttempt = time.Now()
+
+	// Store with same TTL as the cache item (1 week)
+	ttl := 7 * 24 * time.Hour
+	if err := r.SetRefreshMetadata(key, meta, ttl); err != nil {
+		return meta.RetryCount, err
+	}
+
+	return meta.RetryCount, nil
+}
+
+// ResetRetryCount resets the retry count and updates last success time
+func (r *RedisCache) ResetRetryCount(key string) error {
+	if r == nil {
+		return nil
+	}
+
+	meta, err := r.GetRefreshMetadata(key)
+	if err != nil {
+		return err
+	}
+	if meta == nil {
+		meta = &RefreshMetadata{}
+	}
+
+	meta.RetryCount = 0
+	meta.LastSuccess = time.Now()
+	meta.LastAttempt = time.Now()
+
+	ttl := 7 * 24 * time.Hour
+	return r.SetRefreshMetadata(key, meta, ttl)
+}
+
+// DeleteCacheKey removes both the cache key and its metadata
+func (r *RedisCache) DeleteCacheKey(key string) error {
+	if r == nil {
+		return nil
+	}
+
+	metaKey := r.metaKey(key)
+	if err := r.client.Del(r.ctx, key, metaKey).Err(); err != nil {
+		log.Printf("[iptv-proxy] WARNING: Failed to delete cache key %s: %v", key, err)
+		return err
+	}
+
+	return nil
+}
+
+// GetAllCacheKeys returns all cache keys matching a pattern
+func (r *RedisCache) GetAllCacheKeys(pattern string) ([]string, error) {
+	if r == nil {
+		return nil, nil
+	}
+
+	keys, err := r.client.Keys(r.ctx, pattern).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter out metadata keys
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if !strings.HasSuffix(key, ":meta") {
+			result = append(result, key)
+		}
+	}
+
+	return result, nil
+}
+
+// metaKey returns the metadata key for a cache key
+func (r *RedisCache) metaKey(key string) string {
+	return key + ":meta"
 }
 

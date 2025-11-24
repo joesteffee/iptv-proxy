@@ -178,6 +178,8 @@ type Config struct {
 
 	// Redis cache for Xtream API responses
 	redisCache *RedisCache
+	// Cache refresh worker
+	refreshWorker *CacheRefreshWorker
 }
 
 // NewServer initialize a new server configuration
@@ -197,22 +199,34 @@ func NewServer(config *config.ProxyConfig) (*Config, error) {
 
 	// Initialize Redis cache if configured
 	var redisCache *RedisCache
+	var refreshWorker *CacheRefreshWorker
 	if config.RedisURL != "" {
 		var err error
 		redisCache, err = NewRedisCache(config.RedisURL)
 		if err != nil {
 			log.Printf("[iptv-proxy] WARNING: Failed to initialize Redis cache: %v. Continuing without cache.", err)
+		} else {
+			// Create refresh worker
+			refreshWorker = NewCacheRefreshWorker(redisCache, nil) // Will set config later
 		}
 	}
 
-	return &Config{
+	cfg := &Config{
 		config,
 		&p,
 		nil,
 		defaultProxyfiedM3UPath,
 		endpointAntiColision,
 		redisCache,
-	}, nil
+		refreshWorker,
+	}
+
+	// Set config in refresh worker if it exists
+	if refreshWorker != nil {
+		refreshWorker.config = cfg
+	}
+
+	return cfg, nil
 }
 
 // Serve the iptv-proxy api
@@ -228,6 +242,13 @@ func (c *Config) Serve() error {
 		return err
 	}
 
+	// Register cache refresh callbacks and start worker if Redis is enabled
+	if c.refreshWorker != nil {
+		c.registerCacheRefreshCallbacks()
+		c.refreshWorker.Start()
+		defer c.refreshWorker.Stop()
+	}
+
 	router := gin.Default()
 	router.Use(cors.Default())
 	group := router.Group("/")
@@ -237,6 +258,22 @@ func (c *Config) Serve() error {
 	log.Printf("[iptv-proxy] Server is ready and listening on :%d", c.HostConfig.Port)
 
 	return router.Run(fmt.Sprintf(":%d", c.HostConfig.Port))
+}
+
+// registerCacheRefreshCallbacks registers refresh callbacks for all cache types
+func (c *Config) registerCacheRefreshCallbacks() {
+	if c.refreshWorker == nil {
+		return
+	}
+
+	// Register callbacks for each cache pattern
+	c.refreshWorker.RegisterCallback("iptv:live:categories", c.refreshLiveCategories)
+	c.refreshWorker.RegisterCallback("iptv:live:streams:*", c.refreshLiveStreams)
+	c.refreshWorker.RegisterCallback("iptv:vod:categories", c.refreshVodCategories)
+	c.refreshWorker.RegisterCallback("iptv:vod:streams:*", c.refreshVodStreams)
+	c.refreshWorker.RegisterCallback("iptv:series:categories", c.refreshSeriesCategories)
+	c.refreshWorker.RegisterCallback("iptv:series:list:*", c.refreshSeriesList)
+	c.refreshWorker.RegisterCallback("iptv:series:info:*", c.refreshSeriesInfo)
 }
 
 func (c *Config) playlistInitialization() error {
