@@ -29,6 +29,11 @@ import (
 func (c *Config) routes(r *gin.RouterGroup) {
 	r = r.Group(c.CustomEndpoint)
 
+	// Web UI and API routes (no authentication required for simplicity, can be added later)
+	r.GET("/", c.serveWebUI)
+	r.GET("/api/categories", c.getCategoriesHandler)
+	r.POST("/api/categories", c.updateCategoriesHandler)
+
 	//Xtream service endopoints
 	if c.ProxyConfig.XtreamBaseURL != "" {
 		c.xtreamRoutes(r)

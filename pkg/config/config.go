@@ -57,4 +57,5 @@ type ProxyConfig struct {
 	HTTPS                bool
 	User, Password       CredentialString
 	RateLimitRetryTimeout int // Rate limit retry timeout in minutes (default: 10)
+	CategoryFiltersPath   string // Path to category filters JSON file
 }

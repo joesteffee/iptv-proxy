@@ -76,6 +76,12 @@ var rootCmd = &cobra.Command{
 			rateLimitRetryTimeout = 10 // Default to 10 minutes
 		}
 
+		categoryFiltersPath := viper.GetString("category-filters-path")
+		if categoryFiltersPath == "" {
+			// Default to /root/iptv/category_filters.json (common Docker volume mount location)
+			categoryFiltersPath = "/root/iptv/category_filters.json"
+		}
+
 		conf := &config.ProxyConfig{
 			HostConfig: &config.HostConfiguration{
 				Hostname: viper.GetString("hostname"),
@@ -95,6 +101,7 @@ var rootCmd = &cobra.Command{
 			CustomId:             viper.GetString("custom-id"),
 			XtreamGenerateApiGet: viper.GetBool("xtream-api-get"),
 			RateLimitRetryTimeout: rateLimitRetryTimeout,
+			CategoryFiltersPath:   categoryFiltersPath,
 		}
 
 		if conf.AdvertisedPort == 0 {
@@ -144,6 +151,7 @@ func init() {
 	rootCmd.Flags().Int("m3u-cache-expiration", 1, "M3U cache expiration in hour")
 	rootCmd.Flags().BoolP("xtream-api-get", "", false, "Generate get.php from xtream API instead of get.php original endpoint")
 	rootCmd.Flags().Int("rate-limit-retry-timeout", 10, "Rate limit retry timeout in minutes (default: 10, env: RATE_LIMIT_RETRY_TIMEOUT)")
+	rootCmd.Flags().String("category-filters-path", "", "Path to category filters JSON file (default: /root/iptv/category_filters.json, env: CATEGORY_FILTERS_PATH)")
 
 	if e := viper.BindPFlags(rootCmd.Flags()); e != nil {
 		log.Fatal("error binding PFlags to viper")
