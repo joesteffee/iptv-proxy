@@ -665,24 +665,47 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 			}
 			
 			// Fetch series info to get episodes with season/episode information
-			// Add retry logic for transient errors (500, 520, etc.)
+			// Add retry logic for transient errors (500, 520, etc.) and empty array responses
 			var seriesInfo *xtreamcodes.Series
 			var seriesErr error
 			seriesInfoRetries := 3
 			for attempt := 1; attempt <= seriesInfoRetries; attempt++ {
 				seriesInfo, seriesErr = client.GetSeriesInfo(serieIDStr)
+				
+				// Check if we got a valid response with episodes
+				hasValidEpisodes := false
 				if seriesErr == nil && seriesInfo != nil {
-					break
+					// Check if series has episodes
+					if seriesInfo.Episodes != nil && len(seriesInfo.Episodes) > 0 {
+						totalEpisodes := 0
+						for _, episodes := range seriesInfo.Episodes {
+							totalEpisodes += len(episodes)
+						}
+						if totalEpisodes > 0 {
+							hasValidEpisodes = true
+						}
+					}
+					// If we have valid episodes, we're done
+					if hasValidEpisodes {
+						break
+					}
+					// If we have series info but no episodes, check if it's an empty array response
+					// (empty array responses have no Info.Name and no Episodes)
+					if seriesInfo.Info.Name == "" && (seriesInfo.Episodes == nil || len(seriesInfo.Episodes) == 0) {
+						// This is likely an empty array response - treat as transient and retry
+						seriesErr = fmt.Errorf("API returned empty array [] for series ID %s", serieIDStr)
+					}
 				}
 				
-				// Check if it's a transient error (500, 520, etc.) that we should retry
+				// Check if it's a transient error (500, 520, etc.) or empty array that we should retry
 				shouldRetry := false
 				if seriesErr != nil {
 					errStr := seriesErr.Error()
 					if strings.Contains(errStr, "500") || strings.Contains(errStr, "status code was 500") ||
 						strings.Contains(errStr, "520") || strings.Contains(errStr, "status code was 520") ||
 						strings.Contains(errStr, "502") || strings.Contains(errStr, "status code was 502") ||
-						strings.Contains(errStr, "503") || strings.Contains(errStr, "status code was 503") {
+						strings.Contains(errStr, "503") || strings.Contains(errStr, "status code was 503") ||
+						strings.Contains(errStr, "empty array") {
 						shouldRetry = true
 					}
 				}

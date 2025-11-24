@@ -593,16 +593,11 @@ func (s *Series) UnmarshalJSON(data []byte) error {
 		log.Printf("DEBUG: Successfully unmarshaled Series.Episodes as map. Found %d seasons with %d total episodes", 
 			len(episodesMap), totalEpisodes)
 		return nil
-	} else {
-		previewLen := 100
-		if len(aux.EpisodesRaw) < previewLen {
-			previewLen = len(aux.EpisodesRaw)
-		}
-		log.Printf("DEBUG: Failed to unmarshal Series.Episodes as map: %v. EpisodesRaw length: %d, preview: %s", 
-			err, len(aux.EpisodesRaw), string(aux.EpisodesRaw[:previewLen]))
 	}
+	// Map format failed - this is expected for some series that use array-of-arrays format
+	// We'll try array-of-arrays format next, so no need to log this as an error
 
-	// If map format fails, try array-of-arrays format
+	// If map format fails, try array-of-arrays format (some APIs return episodes in this format)
 	var episodesArray [][]SeriesEpisode
 	if err := json.Unmarshal(aux.EpisodesRaw, &episodesArray); err == nil {
 		// Convert array-of-arrays to map using season number from each episode
@@ -615,12 +610,12 @@ func (s *Series) UnmarshalJSON(data []byte) error {
 				totalEpisodes++
 			}
 		}
-		log.Printf("DEBUG: Successfully unmarshaled Series.Episodes as array-of-arrays. Found %d seasons with %d total episodes", 
+		log.Printf("DEBUG: Successfully unmarshaled Series.Episodes as array-of-arrays (converted to map). Found %d seasons with %d total episodes", 
 			len(s.Episodes), totalEpisodes)
 		return nil
-	} else {
-		log.Printf("DEBUG: Failed to unmarshal Series.Episodes as array-of-arrays: %v", err)
 	}
+	// Both formats failed - this is a real error
+	log.Printf("DEBUG: Failed to unmarshal Series.Episodes as both map and array-of-arrays format")
 
 	// If both formats fail, log error and use reflective unmarshalling
 	previewLen := 200

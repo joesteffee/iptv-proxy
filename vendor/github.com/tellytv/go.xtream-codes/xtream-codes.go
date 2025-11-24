@@ -259,6 +259,7 @@ func (c *XtreamClient) GetSeriesInfo(seriesID string) (*Series, error) {
 
 	// Handle empty array response (API sometimes returns [] for invalid/missing series)
 	if len(seriesData) == 2 && string(seriesData) == "[]" {
+		log.Printf("DEBUG: GetSeriesInfo for seriesID %s: API returned empty array []", seriesID)
 		return &Series{
 			Episodes: make(map[string][]SeriesEpisode),
 			Info:     SeriesInfo{},
@@ -292,8 +293,9 @@ func (c *XtreamClient) GetSeriesInfo(seriesID string) (*Series, error) {
 		}
 		if totalEpisodes == 0 && (seriesInfo.Info.Name != "" || len(seriesData) > 100) {
 			// Has info but no episodes - might indicate unmarshaling issue
-			log.Printf("DEBUG: GetSeriesInfo for seriesID %s: unmarshaled successfully but found 0 episodes. Response length: %d, has Info.Name: %v, Episodes map: %v", 
-				seriesID, len(seriesData), seriesInfo.Info.Name != "", seriesInfo.Episodes)
+			// Check if EpisodesRaw was empty or if unmarshaling failed silently
+			log.Printf("DEBUG: GetSeriesInfo for seriesID %s: unmarshaled successfully but found 0 episodes. Response length: %d, has Info.Name: %v, Info.Name: %s, Episodes map len: %d, Episodes map: %v", 
+				seriesID, len(seriesData), seriesInfo.Info.Name != "", seriesInfo.Info.Name, len(seriesInfo.Episodes), seriesInfo.Episodes)
 		}
 	}
 
