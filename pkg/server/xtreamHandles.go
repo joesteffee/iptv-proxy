@@ -64,6 +64,41 @@ func min(a, b int) int {
 	return b
 }
 
+// getFieldValue extracts a field value from either a struct or a map[string]interface{}
+// This is needed because cached JSON data is unmarshaled as map[string]interface{}
+func getFieldValue(v reflect.Value, fieldName string) string {
+	if !v.IsValid() {
+		return ""
+	}
+	
+	// Handle map[string]interface{} (from cached JSON)
+	if v.Kind() == reflect.Interface {
+		v = v.Elem()
+	}
+	
+	if v.Kind() == reflect.Map {
+		key := reflect.ValueOf(fieldName)
+		fieldVal := v.MapIndex(key)
+		if fieldVal.IsValid() && !fieldVal.IsZero() {
+			return fmt.Sprint(fieldVal.Interface())
+		}
+		return ""
+	}
+	
+	// Handle struct
+	if v.Kind() == reflect.Struct {
+		field := v.FieldByName(fieldName)
+		if field.IsValid() {
+			if field.Kind() == reflect.String {
+				return field.String()
+			}
+			return fmt.Sprint(field.Interface())
+		}
+	}
+	
+	return ""
+}
+
 // parseM3UFromReader parses an M3U playlist from an io.Reader
 // This is similar to m3u.Parse but works with an io.Reader instead of a filename/URL
 func parseM3UFromReader(r io.Reader) (m3u.Playlist, error) {
@@ -187,37 +222,64 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 
 	log.Printf("[iptv-proxy] DEBUG: Fetching live categories...\n")
 	
-	// Retry logic for API calls that might fail due to Cloudflare (520 errors are often transient)
-	catRetries := 3
+	// Try to get from cache first
+	cacheKey := "iptv:live:categories"
+	cacheTTL := 7 * 24 * time.Hour // 1 week
 	var cat interface{}
-	for attempt := 1; attempt <= catRetries; attempt++ {
-		categories, getErr := client.GetLiveCategories()
-		if getErr == nil {
-			cat = categories
-			err = nil
-			break
-		}
-		err = getErr
-		
-		// Check if it's a 520 error (Cloudflare) - these are often transient
-		if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
-			if attempt < catRetries {
-				waitTime := time.Duration(attempt) * 2 * time.Second
-				log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting live categories (attempt %d/%d), retrying in %v: %v\n", attempt, catRetries, waitTime, err)
-				time.Sleep(waitTime)
-				continue
-			}
-		}
-		
-		log.Printf("[iptv-proxy] ERROR: Failed to get live categories (attempt %d/%d): %v\n", attempt, catRetries, err)
-		if attempt == catRetries {
-			return nil, err
+	cacheHit := false
+	
+	if c.redisCache != nil {
+		var cachedCat interface{}
+		if found, cacheErr := c.redisCache.GetJSON(cacheKey, &cachedCat); found && cacheErr == nil {
+			cat = cachedCat
+			cacheHit = true
+			log.Printf("[iptv-proxy] DEBUG: Live categories cache HIT\n")
+		} else if cacheErr != nil {
+			log.Printf("[iptv-proxy] WARNING: Redis cache error for live categories: %v, falling back to API\n", cacheErr)
 		}
 	}
 	
-	if err != nil {
-		log.Printf("[iptv-proxy] ERROR: Failed to get live categories after %d attempts: %v\n", catRetries, err)
-		return nil, err
+	// If cache miss, fetch from API
+	if !cacheHit {
+		// Retry logic for API calls that might fail due to Cloudflare (520 errors are often transient)
+		catRetries := 3
+		for attempt := 1; attempt <= catRetries; attempt++ {
+			categories, getErr := client.GetLiveCategories()
+			if getErr == nil {
+				cat = categories
+				err = nil
+				// Store in cache
+				if c.redisCache != nil {
+					if cacheErr := c.redisCache.SetJSON(cacheKey, cat, cacheTTL); cacheErr != nil {
+						log.Printf("[iptv-proxy] WARNING: Failed to cache live categories: %v\n", cacheErr)
+					} else {
+						log.Printf("[iptv-proxy] DEBUG: Live categories cached successfully\n")
+					}
+				}
+				break
+			}
+			err = getErr
+			
+			// Check if it's a 520 error (Cloudflare) - these are often transient
+			if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
+				if attempt < catRetries {
+					waitTime := time.Duration(attempt) * 2 * time.Second
+					log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting live categories (attempt %d/%d), retrying in %v: %v\n", attempt, catRetries, waitTime, err)
+					time.Sleep(waitTime)
+					continue
+				}
+			}
+			
+			log.Printf("[iptv-proxy] ERROR: Failed to get live categories (attempt %d/%d): %v\n", attempt, catRetries, err)
+			if attempt == catRetries {
+				return nil, err
+			}
+		}
+		
+		if err != nil {
+			log.Printf("[iptv-proxy] ERROR: Failed to get live categories after %d attempts: %v\n", catRetries, err)
+			return nil, err
+		}
 	}
 	
 	// GetLiveCategories returns a slice - use reflection to get length
@@ -242,17 +304,8 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 	catValue := reflect.ValueOf(cat)
 	for i := 0; i < catValue.Len(); i++ {
 		categoryElem := catValue.Index(i)
-		categoryID := categoryElem.FieldByName("ID")
-		categoryName := categoryElem.FieldByName("Name")
-		
-		categoryIDStr := ""
-		if categoryID.IsValid() {
-			categoryIDStr = fmt.Sprint(categoryID.Interface())
-		}
-		categoryNameStr := ""
-		if categoryName.IsValid() {
-			categoryNameStr = categoryName.String()
-		}
+		categoryIDStr := getFieldValue(categoryElem, "ID")
+		categoryNameStr := getFieldValue(categoryElem, "Name")
 		
 		// Only include enabled categories (skip if not enabled)
 		if !globalCategoryFilter.isCategoryEnabled("live", categoryIDStr) {
@@ -266,36 +319,59 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 		}
 		
 		// Retry logic for GetLiveStreams (may also fail with 520 errors)
+		streamCacheKey := fmt.Sprintf("iptv:live:streams:%s", categoryIDStr)
 		var live interface{}
-		streamRetries := 3
-		for attempt := 1; attempt <= streamRetries; attempt++ {
-			streams, streamErr := client.GetLiveStreams(categoryIDStr)
-			if streamErr == nil {
-				live = streams
+		streamCacheHit := false
+		
+		if c.redisCache != nil {
+			var cachedStreams interface{}
+			if found, cacheErr := c.redisCache.GetJSON(streamCacheKey, &cachedStreams); found && cacheErr == nil {
+				live = cachedStreams
+				streamCacheHit = true
 				err = nil
-				break
-			}
-			err = streamErr
-			
-			// Check if it's a 520 error (Cloudflare) - these are often transient
-			if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
-				if attempt < streamRetries {
-					waitTime := time.Duration(attempt) * 1 * time.Second
-					log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting streams for category %s (attempt %d/%d), retrying in %v\n", categoryNameStr, attempt, streamRetries, waitTime)
-					time.Sleep(waitTime)
-					continue
-				}
-			}
-			
-			if attempt == streamRetries {
-				log.Printf("[iptv-proxy] ERROR: Failed to get live streams for category %s after %d attempts: %v\n", categoryNameStr, streamRetries, err)
-				return nil, err
+				log.Printf("[iptv-proxy] DEBUG: Live streams cache HIT for category %s\n", categoryNameStr)
+			} else if cacheErr != nil {
+				log.Printf("[iptv-proxy] WARNING: Redis cache error for live streams category %s: %v, falling back to API\n", categoryNameStr, cacheErr)
 			}
 		}
 		
-		if err != nil {
-			log.Printf("[iptv-proxy] ERROR: Failed to get live streams for category %s: %v\n", categoryNameStr, err)
-			return nil, err
+		if !streamCacheHit {
+			streamRetries := 3
+			for attempt := 1; attempt <= streamRetries; attempt++ {
+				streams, streamErr := client.GetLiveStreams(categoryIDStr)
+				if streamErr == nil {
+					live = streams
+					err = nil
+					// Store in cache
+					if c.redisCache != nil {
+						if cacheErr := c.redisCache.SetJSON(streamCacheKey, live, cacheTTL); cacheErr != nil {
+							log.Printf("[iptv-proxy] WARNING: Failed to cache live streams for category %s: %v\n", categoryNameStr, cacheErr)
+						}
+					}
+					break
+				}
+				err = streamErr
+				
+				// Check if it's a 520 error (Cloudflare) - these are often transient
+				if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
+					if attempt < streamRetries {
+						waitTime := time.Duration(attempt) * 1 * time.Second
+						log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting streams for category %s (attempt %d/%d), retrying in %v\n", categoryNameStr, attempt, streamRetries, waitTime)
+						time.Sleep(waitTime)
+						continue
+					}
+				}
+				
+				if attempt == streamRetries {
+					log.Printf("[iptv-proxy] ERROR: Failed to get live streams for category %s after %d attempts: %v\n", categoryNameStr, streamRetries, err)
+					return nil, err
+				}
+			}
+			
+			if err != nil {
+				log.Printf("[iptv-proxy] ERROR: Failed to get live streams for category %s: %v\n", categoryNameStr, err)
+				return nil, err
+			}
 		}
 		
 		// Convert live to slice using reflection
@@ -311,32 +387,11 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 
 		for j := 0; j < liveLen; j++ {
 			streamElem := liveValue.Index(j)
-			streamName := streamElem.FieldByName("Name")
-			streamID := streamElem.FieldByName("ID")
-			streamEPG := streamElem.FieldByName("EPGChannelID")
-			streamIcon := streamElem.FieldByName("Icon")
-			streamContainerExt := streamElem.FieldByName("ContainerExtension")
-			
-			streamNameStr := ""
-			if streamName.IsValid() {
-				streamNameStr = streamName.String()
-			}
-			streamIDStr := ""
-			if streamID.IsValid() {
-				streamIDStr = fmt.Sprint(streamID.Interface())
-			}
-			streamEPGStr := ""
-			if streamEPG.IsValid() {
-				streamEPGStr = streamEPG.String()
-			}
-			streamIconStr := ""
-			if streamIcon.IsValid() {
-				streamIconStr = streamIcon.String()
-			}
-			streamContainerExtStr := ""
-			if streamContainerExt.IsValid() {
-				streamContainerExtStr = streamContainerExt.String()
-			}
+			streamNameStr := getFieldValue(streamElem, "Name")
+			streamIDStr := getFieldValue(streamElem, "ID")
+			streamEPGStr := getFieldValue(streamElem, "EPGChannelID")
+			streamIconStr := getFieldValue(streamElem, "Icon")
+			streamContainerExtStr := getFieldValue(streamElem, "ContainerExtension")
 			
 			// Use container_extension from API if available, otherwise fall back to output parameter
 			liveExtension := extension
@@ -370,36 +425,60 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 
 	// Fetch VOD (Movies) categories and streams
 	log.Printf("[iptv-proxy] DEBUG: Fetching VOD (Movies) categories...\n")
-	vodRetries := 3
+	vodCacheKey := "iptv:vod:categories"
 	var vodCats interface{}
-	for attempt := 1; attempt <= vodRetries; attempt++ {
-		categories, getErr := client.GetVideoOnDemandCategories()
-		if getErr == nil {
-			vodCats = categories
-			err = nil
-			break
-		}
-		err = getErr
-		
-		// Check if it's a 520 error (Cloudflare) - these are often transient
-		if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
-			if attempt < vodRetries {
-				waitTime := time.Duration(attempt) * 2 * time.Second
-				log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting VOD categories (attempt %d/%d), retrying in %v: %v\n", attempt, vodRetries, waitTime, err)
-				time.Sleep(waitTime)
-				continue
-			}
-		}
-		
-		log.Printf("[iptv-proxy] ERROR: Failed to get VOD categories (attempt %d/%d): %v\n", attempt, vodRetries, err)
-		if attempt == vodRetries {
-			return nil, err
+	vodCacheHit := false
+	
+	if c.redisCache != nil {
+		var cachedVodCats interface{}
+		if found, cacheErr := c.redisCache.GetJSON(vodCacheKey, &cachedVodCats); found && cacheErr == nil {
+			vodCats = cachedVodCats
+			vodCacheHit = true
+			log.Printf("[iptv-proxy] DEBUG: VOD categories cache HIT\n")
+		} else if cacheErr != nil {
+			log.Printf("[iptv-proxy] WARNING: Redis cache error for VOD categories: %v, falling back to API\n", cacheErr)
 		}
 	}
 	
-	if err != nil {
-		log.Printf("[iptv-proxy] ERROR: Failed to get VOD categories after %d attempts: %v\n", vodRetries, err)
-		return nil, err
+	if !vodCacheHit {
+		vodRetries := 3
+		for attempt := 1; attempt <= vodRetries; attempt++ {
+			categories, getErr := client.GetVideoOnDemandCategories()
+			if getErr == nil {
+				vodCats = categories
+				err = nil
+				// Store in cache
+				if c.redisCache != nil {
+					if cacheErr := c.redisCache.SetJSON(vodCacheKey, vodCats, cacheTTL); cacheErr != nil {
+						log.Printf("[iptv-proxy] WARNING: Failed to cache VOD categories: %v\n", cacheErr)
+					} else {
+						log.Printf("[iptv-proxy] DEBUG: VOD categories cached successfully\n")
+					}
+				}
+				break
+			}
+			err = getErr
+			
+			// Check if it's a 520 error (Cloudflare) - these are often transient
+			if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
+				if attempt < vodRetries {
+					waitTime := time.Duration(attempt) * 2 * time.Second
+					log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting VOD categories (attempt %d/%d), retrying in %v: %v\n", attempt, vodRetries, waitTime, err)
+					time.Sleep(waitTime)
+					continue
+				}
+			}
+			
+			log.Printf("[iptv-proxy] ERROR: Failed to get VOD categories (attempt %d/%d): %v\n", attempt, vodRetries, err)
+			if attempt == vodRetries {
+				return nil, err
+			}
+		}
+		
+		if err != nil {
+			log.Printf("[iptv-proxy] ERROR: Failed to get VOD categories after %d attempts: %v\n", vodRetries, err)
+			return nil, err
+		}
 	}
 	
 	vodCatsValue := reflect.ValueOf(vodCats)
@@ -412,17 +491,8 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 	vodTracks := 0
 	for i := 0; i < vodCatsLen; i++ {
 		categoryElem := vodCatsValue.Index(i)
-		categoryID := categoryElem.FieldByName("ID")
-		categoryName := categoryElem.FieldByName("Name")
-		
-		categoryIDStr := ""
-		if categoryID.IsValid() {
-			categoryIDStr = fmt.Sprint(categoryID.Interface())
-		}
-		categoryNameStr := ""
-		if categoryName.IsValid() {
-			categoryNameStr = categoryName.String()
-		}
+		categoryIDStr := getFieldValue(categoryElem, "ID")
+		categoryNameStr := getFieldValue(categoryElem, "Name")
 		
 		// Only include enabled categories (skip if not enabled)
 		if !globalCategoryFilter.isCategoryEnabled("movies", categoryIDStr) {
@@ -435,35 +505,58 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 		}
 		
 		// Retry logic for GetVideoOnDemandStreams
+		vodStreamCacheKey := fmt.Sprintf("iptv:vod:streams:%s", categoryIDStr)
 		var movies interface{}
-		movieRetries := 3
-		for attempt := 1; attempt <= movieRetries; attempt++ {
-			streams, streamErr := client.GetVideoOnDemandStreams(categoryIDStr)
-			if streamErr == nil {
-				movies = streams
+		vodStreamCacheHit := false
+		
+		if c.redisCache != nil {
+			var cachedMovies interface{}
+			if found, cacheErr := c.redisCache.GetJSON(vodStreamCacheKey, &cachedMovies); found && cacheErr == nil {
+				movies = cachedMovies
+				vodStreamCacheHit = true
 				err = nil
-				break
-			}
-			err = streamErr
-			
-			if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
-				if attempt < movieRetries {
-					waitTime := time.Duration(attempt) * 1 * time.Second
-					log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting VOD streams for category %s (attempt %d/%d), retrying in %v\n", categoryNameStr, attempt, movieRetries, waitTime)
-					time.Sleep(waitTime)
-					continue
-				}
-			}
-			
-			if attempt == movieRetries {
-				log.Printf("[iptv-proxy] ERROR: Failed to get VOD streams for category %s after %d attempts: %v\n", categoryNameStr, movieRetries, err)
-				return nil, err
+				log.Printf("[iptv-proxy] DEBUG: VOD streams cache HIT for category %s\n", categoryNameStr)
+			} else if cacheErr != nil {
+				log.Printf("[iptv-proxy] WARNING: Redis cache error for VOD streams category %s: %v, falling back to API\n", categoryNameStr, cacheErr)
 			}
 		}
 		
-		if err != nil {
-			log.Printf("[iptv-proxy] ERROR: Failed to get VOD streams for category %s: %v\n", categoryNameStr, err)
-			return nil, err
+		if !vodStreamCacheHit {
+			movieRetries := 3
+			for attempt := 1; attempt <= movieRetries; attempt++ {
+				streams, streamErr := client.GetVideoOnDemandStreams(categoryIDStr)
+				if streamErr == nil {
+					movies = streams
+					err = nil
+					// Store in cache
+					if c.redisCache != nil {
+						if cacheErr := c.redisCache.SetJSON(vodStreamCacheKey, movies, cacheTTL); cacheErr != nil {
+							log.Printf("[iptv-proxy] WARNING: Failed to cache VOD streams for category %s: %v\n", categoryNameStr, cacheErr)
+						}
+					}
+					break
+				}
+				err = streamErr
+				
+				if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
+					if attempt < movieRetries {
+						waitTime := time.Duration(attempt) * 1 * time.Second
+						log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting VOD streams for category %s (attempt %d/%d), retrying in %v\n", categoryNameStr, attempt, movieRetries, waitTime)
+						time.Sleep(waitTime)
+						continue
+					}
+				}
+				
+				if attempt == movieRetries {
+					log.Printf("[iptv-proxy] ERROR: Failed to get VOD streams for category %s after %d attempts: %v\n", categoryNameStr, movieRetries, err)
+					return nil, err
+				}
+			}
+			
+			if err != nil {
+				log.Printf("[iptv-proxy] ERROR: Failed to get VOD streams for category %s: %v\n", categoryNameStr, err)
+				return nil, err
+			}
 		}
 		
 		moviesValue := reflect.ValueOf(movies)
@@ -479,32 +572,11 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 
 		for j := 0; j < moviesLen; j++ {
 			movieElem := moviesValue.Index(j)
-			movieName := movieElem.FieldByName("Name")
-			movieID := movieElem.FieldByName("ID")
-			movieEPG := movieElem.FieldByName("EPGChannelID")
-			movieIcon := movieElem.FieldByName("Icon")
-			movieContainerExt := movieElem.FieldByName("ContainerExtension")
-			
-			movieNameStr := ""
-			if movieName.IsValid() {
-				movieNameStr = movieName.String()
-			}
-			movieIDStr := ""
-			if movieID.IsValid() {
-				movieIDStr = fmt.Sprint(movieID.Interface())
-			}
-			movieEPGStr := ""
-			if movieEPG.IsValid() {
-				movieEPGStr = movieEPG.String()
-			}
-			movieIconStr := ""
-			if movieIcon.IsValid() {
-				movieIconStr = movieIcon.String()
-			}
-			movieContainerExtStr := ""
-			if movieContainerExt.IsValid() {
-				movieContainerExtStr = movieContainerExt.String()
-			}
+			movieNameStr := getFieldValue(movieElem, "Name")
+			movieIDStr := getFieldValue(movieElem, "ID")
+			movieEPGStr := getFieldValue(movieElem, "EPGChannelID")
+			movieIconStr := getFieldValue(movieElem, "Icon")
+			movieContainerExtStr := getFieldValue(movieElem, "ContainerExtension")
 			
 			// Use container_extension from API if available, otherwise fall back to output parameter
 			movieExtension := extension
@@ -538,36 +610,60 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 
 	// Fetch Series categories and series
 	log.Printf("[iptv-proxy] DEBUG: Fetching Series categories...\n")
-	seriesRetries := 3
+	seriesCacheKey := "iptv:series:categories"
 	var seriesCats interface{}
-	for attempt := 1; attempt <= seriesRetries; attempt++ {
-		categories, getErr := client.GetSeriesCategories()
-		if getErr == nil {
-			seriesCats = categories
-			err = nil
-			break
-		}
-		err = getErr
-		
-		// Check if it's a 520 error (Cloudflare) - these are often transient
-		if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
-			if attempt < seriesRetries {
-				waitTime := time.Duration(attempt) * 2 * time.Second
-				log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting Series categories (attempt %d/%d), retrying in %v: %v\n", attempt, seriesRetries, waitTime, err)
-				time.Sleep(waitTime)
-				continue
-			}
-		}
-		
-		log.Printf("[iptv-proxy] ERROR: Failed to get Series categories (attempt %d/%d): %v\n", attempt, seriesRetries, err)
-		if attempt == seriesRetries {
-			return nil, err
+	seriesCacheHit := false
+	
+	if c.redisCache != nil {
+		var cachedSeriesCats interface{}
+		if found, cacheErr := c.redisCache.GetJSON(seriesCacheKey, &cachedSeriesCats); found && cacheErr == nil {
+			seriesCats = cachedSeriesCats
+			seriesCacheHit = true
+			log.Printf("[iptv-proxy] DEBUG: Series categories cache HIT\n")
+		} else if cacheErr != nil {
+			log.Printf("[iptv-proxy] WARNING: Redis cache error for Series categories: %v, falling back to API\n", cacheErr)
 		}
 	}
 	
-	if err != nil {
-		log.Printf("[iptv-proxy] ERROR: Failed to get Series categories after %d attempts: %v\n", seriesRetries, err)
-		return nil, err
+	if !seriesCacheHit {
+		seriesRetries := 3
+		for attempt := 1; attempt <= seriesRetries; attempt++ {
+			categories, getErr := client.GetSeriesCategories()
+			if getErr == nil {
+				seriesCats = categories
+				err = nil
+				// Store in cache
+				if c.redisCache != nil {
+					if cacheErr := c.redisCache.SetJSON(seriesCacheKey, seriesCats, cacheTTL); cacheErr != nil {
+						log.Printf("[iptv-proxy] WARNING: Failed to cache Series categories: %v\n", cacheErr)
+					} else {
+						log.Printf("[iptv-proxy] DEBUG: Series categories cached successfully\n")
+					}
+				}
+				break
+			}
+			err = getErr
+			
+			// Check if it's a 520 error (Cloudflare) - these are often transient
+			if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
+				if attempt < seriesRetries {
+					waitTime := time.Duration(attempt) * 2 * time.Second
+					log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting Series categories (attempt %d/%d), retrying in %v: %v\n", attempt, seriesRetries, waitTime, err)
+					time.Sleep(waitTime)
+					continue
+				}
+			}
+			
+			log.Printf("[iptv-proxy] ERROR: Failed to get Series categories (attempt %d/%d): %v\n", attempt, seriesRetries, err)
+			if attempt == seriesRetries {
+				return nil, err
+			}
+		}
+		
+		if err != nil {
+			log.Printf("[iptv-proxy] ERROR: Failed to get Series categories after %d attempts: %v\n", seriesRetries, err)
+			return nil, err
+		}
 	}
 	
 	seriesCatsValue := reflect.ValueOf(seriesCats)
@@ -580,17 +676,8 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 	seriesTracks := 0
 	for i := 0; i < seriesCatsLen; i++ {
 		categoryElem := seriesCatsValue.Index(i)
-		categoryID := categoryElem.FieldByName("ID")
-		categoryName := categoryElem.FieldByName("Name")
-		
-		categoryIDStr := ""
-		if categoryID.IsValid() {
-			categoryIDStr = fmt.Sprint(categoryID.Interface())
-		}
-		categoryNameStr := ""
-		if categoryName.IsValid() {
-			categoryNameStr = categoryName.String()
-		}
+		categoryIDStr := getFieldValue(categoryElem, "ID")
+		categoryNameStr := getFieldValue(categoryElem, "Name")
 		
 		// Only include enabled categories (skip if not enabled)
 		if !globalCategoryFilter.isCategoryEnabled("series", categoryIDStr) {
@@ -603,35 +690,58 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 		}
 		
 		// Retry logic for GetSeries
+		seriesListCacheKey := fmt.Sprintf("iptv:series:list:%s", categoryIDStr)
 		var series interface{}
-		seriesStreamRetries := 3
-		for attempt := 1; attempt <= seriesStreamRetries; attempt++ {
-			streams, streamErr := client.GetSeries(categoryIDStr)
-			if streamErr == nil {
-				series = streams
+		seriesListCacheHit := false
+		
+		if c.redisCache != nil {
+			var cachedSeries interface{}
+			if found, cacheErr := c.redisCache.GetJSON(seriesListCacheKey, &cachedSeries); found && cacheErr == nil {
+				series = cachedSeries
+				seriesListCacheHit = true
 				err = nil
-				break
-			}
-			err = streamErr
-			
-			if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
-				if attempt < seriesStreamRetries {
-					waitTime := time.Duration(attempt) * 1 * time.Second
-					log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting series for category %s (attempt %d/%d), retrying in %v\n", categoryNameStr, attempt, seriesStreamRetries, waitTime)
-					time.Sleep(waitTime)
-					continue
-				}
-			}
-			
-			if attempt == seriesStreamRetries {
-				log.Printf("[iptv-proxy] ERROR: Failed to get series for category %s after %d attempts: %v\n", categoryNameStr, seriesStreamRetries, err)
-				return nil, err
+				log.Printf("[iptv-proxy] DEBUG: Series list cache HIT for category %s\n", categoryNameStr)
+			} else if cacheErr != nil {
+				log.Printf("[iptv-proxy] WARNING: Redis cache error for series list category %s: %v, falling back to API\n", categoryNameStr, cacheErr)
 			}
 		}
 		
-		if err != nil {
-			log.Printf("[iptv-proxy] ERROR: Failed to get series for category %s: %v\n", categoryNameStr, err)
-			return nil, err
+		if !seriesListCacheHit {
+			seriesStreamRetries := 3
+			for attempt := 1; attempt <= seriesStreamRetries; attempt++ {
+				streams, streamErr := client.GetSeries(categoryIDStr)
+				if streamErr == nil {
+					series = streams
+					err = nil
+					// Store in cache
+					if c.redisCache != nil {
+						if cacheErr := c.redisCache.SetJSON(seriesListCacheKey, series, cacheTTL); cacheErr != nil {
+							log.Printf("[iptv-proxy] WARNING: Failed to cache series list for category %s: %v\n", categoryNameStr, cacheErr)
+						}
+					}
+					break
+				}
+				err = streamErr
+				
+				if strings.Contains(err.Error(), "520") || strings.Contains(err.Error(), "status code was 520") {
+					if attempt < seriesStreamRetries {
+						waitTime := time.Duration(attempt) * 1 * time.Second
+						log.Printf("[iptv-proxy] WARNING: Cloudflare 520 error getting series for category %s (attempt %d/%d), retrying in %v\n", categoryNameStr, attempt, seriesStreamRetries, waitTime)
+						time.Sleep(waitTime)
+						continue
+					}
+				}
+				
+				if attempt == seriesStreamRetries {
+					log.Printf("[iptv-proxy] ERROR: Failed to get series for category %s after %d attempts: %v\n", categoryNameStr, seriesStreamRetries, err)
+					return nil, err
+				}
+			}
+			
+			if err != nil {
+				log.Printf("[iptv-proxy] ERROR: Failed to get series for category %s: %v\n", categoryNameStr, err)
+				return nil, err
+			}
 		}
 		
 		seriesValue := reflect.ValueOf(series)
@@ -647,81 +757,93 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 
 		for j := 0; j < seriesLen; j++ {
 			serieElem := seriesValue.Index(j)
-			serieName := serieElem.FieldByName("Name")
-			serieID := serieElem.FieldByName("SeriesID")
-			serieCover := serieElem.FieldByName("Cover")
-			
-			serieNameStr := ""
-			if serieName.IsValid() {
-				serieNameStr = serieName.String()
-			}
-			serieIDStr := ""
-			if serieID.IsValid() {
-				serieIDStr = fmt.Sprint(serieID.Interface())
-			}
-			serieCoverStr := ""
-			if serieCover.IsValid() {
-				serieCoverStr = serieCover.String()
-			}
+			serieNameStr := getFieldValue(serieElem, "Name")
+			serieIDStr := getFieldValue(serieElem, "SeriesID")
+			serieCoverStr := getFieldValue(serieElem, "Cover")
 			
 			// Fetch series info to get episodes with season/episode information
 			// Add retry logic for transient errors (500, 520, etc.) and empty array responses
+			seriesInfoCacheKey := fmt.Sprintf("iptv:series:info:%s", serieIDStr)
 			var seriesInfo *xtreamcodes.Series
 			var seriesErr error
-			seriesInfoRetries := 3
-			for attempt := 1; attempt <= seriesInfoRetries; attempt++ {
-				seriesInfo, seriesErr = client.GetSeriesInfo(serieIDStr)
-				
-				// Check if we got a valid response with episodes
-				hasValidEpisodes := false
-				if seriesErr == nil && seriesInfo != nil {
-					// Check if series has episodes
-					if seriesInfo.Episodes != nil && len(seriesInfo.Episodes) > 0 {
-						totalEpisodes := 0
-						for _, episodes := range seriesInfo.Episodes {
-							totalEpisodes += len(episodes)
+			seriesInfoCacheHit := false
+			
+			// Try cache first
+			if c.redisCache != nil {
+				var cachedSeriesInfo xtreamcodes.Series
+				if found, cacheErr := c.redisCache.GetJSON(seriesInfoCacheKey, &cachedSeriesInfo); found && cacheErr == nil {
+					seriesInfo = &cachedSeriesInfo
+					seriesInfoCacheHit = true
+					seriesErr = nil
+					log.Printf("[iptv-proxy] DEBUG: Series info cache HIT for %s (ID: %s)\n", serieNameStr, serieIDStr)
+				} else if cacheErr != nil {
+					log.Printf("[iptv-proxy] WARNING: Redis cache error for series info %s (ID: %s): %v, falling back to API\n", serieNameStr, serieIDStr, cacheErr)
+				}
+			}
+			
+			// If cache miss, fetch from API
+			if !seriesInfoCacheHit {
+				seriesInfoRetries := 3
+				for attempt := 1; attempt <= seriesInfoRetries; attempt++ {
+					seriesInfo, seriesErr = client.GetSeriesInfo(serieIDStr)
+					
+					// Check if we got a valid response with episodes
+					hasValidEpisodes := false
+					if seriesErr == nil && seriesInfo != nil {
+						// Check if series has episodes
+						if seriesInfo.Episodes != nil && len(seriesInfo.Episodes) > 0 {
+							totalEpisodes := 0
+							for _, episodes := range seriesInfo.Episodes {
+								totalEpisodes += len(episodes)
+							}
+							if totalEpisodes > 0 {
+								hasValidEpisodes = true
+							}
 						}
-						if totalEpisodes > 0 {
-							hasValidEpisodes = true
+						// If we have valid episodes, we're done
+						if hasValidEpisodes {
+							// Store in cache
+							if c.redisCache != nil {
+								if cacheErr := c.redisCache.SetJSON(seriesInfoCacheKey, seriesInfo, cacheTTL); cacheErr != nil {
+									log.Printf("[iptv-proxy] WARNING: Failed to cache series info for %s (ID: %s): %v\n", serieNameStr, serieIDStr, cacheErr)
+								}
+							}
+							break
+						}
+						// If we have series info but no episodes, check if it's an empty array response
+						// (empty array responses have no Info.Name and no Episodes)
+						if seriesInfo.Info.Name == "" && (seriesInfo.Episodes == nil || len(seriesInfo.Episodes) == 0) {
+							// This is likely an empty array response - treat as transient and retry
+							seriesErr = fmt.Errorf("API returned empty array [] for series ID %s", serieIDStr)
 						}
 					}
-					// If we have valid episodes, we're done
-					if hasValidEpisodes {
-						break
+					
+					// Check if it's a transient error (500, 520, etc.) or empty array that we should retry
+					shouldRetry := false
+					if seriesErr != nil {
+						errStr := seriesErr.Error()
+						if strings.Contains(errStr, "500") || strings.Contains(errStr, "status code was 500") ||
+							strings.Contains(errStr, "520") || strings.Contains(errStr, "status code was 520") ||
+							strings.Contains(errStr, "502") || strings.Contains(errStr, "status code was 502") ||
+							strings.Contains(errStr, "503") || strings.Contains(errStr, "status code was 503") ||
+							strings.Contains(errStr, "empty array") {
+							shouldRetry = true
+						}
 					}
-					// If we have series info but no episodes, check if it's an empty array response
-					// (empty array responses have no Info.Name and no Episodes)
-					if seriesInfo.Info.Name == "" && (seriesInfo.Episodes == nil || len(seriesInfo.Episodes) == 0) {
-						// This is likely an empty array response - treat as transient and retry
-						seriesErr = fmt.Errorf("API returned empty array [] for series ID %s", serieIDStr)
+					
+					if shouldRetry && attempt < seriesInfoRetries {
+						waitTime := time.Duration(attempt) * 1 * time.Second
+						log.Printf("[iptv-proxy] WARNING: Transient error getting series info for %s (ID: %s) (attempt %d/%d), retrying in %v: %v\n", serieNameStr, serieIDStr, attempt, seriesInfoRetries, waitTime, seriesErr)
+						time.Sleep(waitTime)
+						continue
 					}
-				}
-				
-				// Check if it's a transient error (500, 520, etc.) or empty array that we should retry
-				shouldRetry := false
-				if seriesErr != nil {
-					errStr := seriesErr.Error()
-					if strings.Contains(errStr, "500") || strings.Contains(errStr, "status code was 500") ||
-						strings.Contains(errStr, "520") || strings.Contains(errStr, "status code was 520") ||
-						strings.Contains(errStr, "502") || strings.Contains(errStr, "status code was 502") ||
-						strings.Contains(errStr, "503") || strings.Contains(errStr, "status code was 503") ||
-						strings.Contains(errStr, "empty array") {
-						shouldRetry = true
+					
+					// If we've exhausted retries or it's not a retryable error, log and break
+					if attempt == seriesInfoRetries {
+						log.Printf("[iptv-proxy] WARNING: Failed to get series info for %s (ID: %s) after %d attempts: %v\n", serieNameStr, serieIDStr, seriesInfoRetries, seriesErr)
 					}
+					break
 				}
-				
-				if shouldRetry && attempt < seriesInfoRetries {
-					waitTime := time.Duration(attempt) * 1 * time.Second
-					log.Printf("[iptv-proxy] WARNING: Transient error getting series info for %s (ID: %s) (attempt %d/%d), retrying in %v: %v\n", serieNameStr, serieIDStr, attempt, seriesInfoRetries, waitTime, seriesErr)
-					time.Sleep(waitTime)
-					continue
-				}
-				
-				// If we've exhausted retries or it's not a retryable error, log and break
-				if attempt == seriesInfoRetries {
-					log.Printf("[iptv-proxy] WARNING: Failed to get series info for %s (ID: %s) after %d attempts: %v\n", serieNameStr, serieIDStr, seriesInfoRetries, seriesErr)
-				}
-				break
 			}
 			
 			if seriesErr != nil || seriesInfo == nil {
@@ -766,7 +888,7 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 					
 					// Get episode title
 					episodeTitle := episode.Title
-					if episodeTitle == "" && episode.Info != nil {
+					if episodeTitle == "" && episode.Info.Name != "" {
 						episodeTitle = episode.Info.Name
 					}
 					

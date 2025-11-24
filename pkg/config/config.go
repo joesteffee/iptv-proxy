@@ -58,4 +58,5 @@ type ProxyConfig struct {
 	User, Password       CredentialString
 	RateLimitRetryTimeout int // Rate limit retry timeout in minutes (default: 10)
 	CategoryFiltersPath   string // Path to category filters JSON file
+	RedisURL             string // Redis connection URL (optional, empty means Redis disabled)
 }

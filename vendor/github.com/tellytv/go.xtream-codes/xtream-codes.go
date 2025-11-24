@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -219,28 +218,7 @@ func (c *XtreamClient) GetSeries(categoryID string) ([]SeriesInfo, error) {
 	seriesInfos := make([]SeriesInfo, 0)
 
 	if jsonErr := json.Unmarshal(seriesData, &seriesInfos); jsonErr != nil {
-		// Debug logging for unmarshaling issues
-		previewLen := 200
-		if len(seriesData) < previewLen {
-			previewLen = len(seriesData)
-		}
-		preview := ""
-		if len(seriesData) > 0 {
-			preview = string(seriesData[:previewLen])
-		}
-		log.Printf("DEBUG: GetSeries unmarshaling error for categoryID %s: %v. Response length: %d, preview: %s", 
-			categoryID, jsonErr, len(seriesData), preview)
 		return nil, jsonErr
-	}
-	
-	// Debug logging for successful unmarshaling
-	if categoryID != "" && len(seriesInfos) == 0 && len(seriesData) > 10 {
-		previewLen := 200
-		if len(seriesData) < previewLen {
-			previewLen = len(seriesData)
-		}
-		log.Printf("DEBUG: GetSeries for categoryID %s: unmarshaled successfully but got 0 series. Response length: %d, preview: %s", 
-			categoryID, len(seriesData), string(seriesData[:previewLen]))
 	}
 
 	return seriesInfos, nil
@@ -257,47 +235,9 @@ func (c *XtreamClient) GetSeriesInfo(seriesID string) (*Series, error) {
 		return nil, seriesErr
 	}
 
-	// Handle empty array response (API sometimes returns [] for invalid/missing series)
-	if len(seriesData) == 2 && string(seriesData) == "[]" {
-		log.Printf("DEBUG: GetSeriesInfo for seriesID %s: API returned empty array []", seriesID)
-		return &Series{
-			Episodes: make(map[string][]SeriesEpisode),
-			Info:     SeriesInfo{},
-			Seasons:  []interface{}{},
-		}, nil
-	}
-
 	seriesInfo := &Series{}
 
 	jsonErr := json.Unmarshal(seriesData, &seriesInfo)
-	
-	// Debug logging for unmarshaling issues
-	if jsonErr != nil {
-		previewLen := 200
-		if len(seriesData) < previewLen {
-			previewLen = len(seriesData)
-		}
-		preview := ""
-		if len(seriesData) > 0 {
-			preview = string(seriesData[:previewLen])
-		}
-		log.Printf("DEBUG: GetSeriesInfo unmarshaling error for seriesID %s: %v. Response length: %d, preview: %s", 
-			seriesID, jsonErr, len(seriesData), preview)
-	} else if seriesInfo != nil {
-		// Check if episodes were unmarshaled correctly
-		totalEpisodes := 0
-		if seriesInfo.Episodes != nil {
-			for _, episodes := range seriesInfo.Episodes {
-				totalEpisodes += len(episodes)
-			}
-		}
-		if totalEpisodes == 0 && (seriesInfo.Info.Name != "" || len(seriesData) > 100) {
-			// Has info but no episodes - might indicate unmarshaling issue
-			// Check if EpisodesRaw was empty or if unmarshaling failed silently
-			log.Printf("DEBUG: GetSeriesInfo for seriesID %s: unmarshaled successfully but found 0 episodes. Response length: %d, has Info.Name: %v, Info.Name: %s, Episodes map len: %d, Episodes map: %v", 
-				seriesID, len(seriesData), seriesInfo.Info.Name != "", seriesInfo.Info.Name, len(seriesInfo.Episodes), seriesInfo.Episodes)
-		}
-	}
 
 	return seriesInfo, jsonErr
 }
@@ -366,7 +306,6 @@ func (c *XtreamClient) sendRequest(action string, parameters url.Values) ([]byte
 	file := "player_api.php"
 	if action == "xmltv.php" {
 		file = action
-		action = ""
 	}
 	url := fmt.Sprintf("%s/%s?username=%s&password=%s", c.BaseURL, file, c.Username, c.Password)
 	if action != "" {
