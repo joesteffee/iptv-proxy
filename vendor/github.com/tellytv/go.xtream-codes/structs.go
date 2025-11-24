@@ -586,7 +586,20 @@ func (s *Series) UnmarshalJSON(data []byte) error {
 	var episodesMap map[string][]SeriesEpisode
 	if err := json.Unmarshal(aux.EpisodesRaw, &episodesMap); err == nil {
 		s.Episodes = episodesMap
+		totalEpisodes := 0
+		for _, episodes := range episodesMap {
+			totalEpisodes += len(episodes)
+		}
+		log.Printf("DEBUG: Successfully unmarshaled Series.Episodes as map. Found %d seasons with %d total episodes", 
+			len(episodesMap), totalEpisodes)
 		return nil
+	} else {
+		previewLen := 100
+		if len(aux.EpisodesRaw) < previewLen {
+			previewLen = len(aux.EpisodesRaw)
+		}
+		log.Printf("DEBUG: Failed to unmarshal Series.Episodes as map: %v. EpisodesRaw length: %d, preview: %s", 
+			err, len(aux.EpisodesRaw), string(aux.EpisodesRaw[:previewLen]))
 	}
 
 	// If map format fails, try array-of-arrays format
@@ -594,22 +607,41 @@ func (s *Series) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(aux.EpisodesRaw, &episodesArray); err == nil {
 		// Convert array-of-arrays to map using season number from each episode
 		s.Episodes = make(map[string][]SeriesEpisode)
+		totalEpisodes := 0
 		for _, seasonEpisodes := range episodesArray {
 			for _, episode := range seasonEpisodes {
 				seasonKey := fmt.Sprintf("%d", int(episode.Season))
 				s.Episodes[seasonKey] = append(s.Episodes[seasonKey], episode)
+				totalEpisodes++
 			}
 		}
+		log.Printf("DEBUG: Successfully unmarshaled Series.Episodes as array-of-arrays. Found %d seasons with %d total episodes", 
+			len(s.Episodes), totalEpisodes)
 		return nil
+	} else {
+		log.Printf("DEBUG: Failed to unmarshal Series.Episodes as array-of-arrays: %v", err)
 	}
 
 	// If both formats fail, log error and use reflective unmarshalling
-	log.Printf("Warning: Failed to unmarshal Series.Episodes. Using reflective unmarshalling.")
+	previewLen := 200
+	if len(aux.EpisodesRaw) < previewLen {
+		previewLen = len(aux.EpisodesRaw)
+	}
+	log.Printf("Warning: Failed to unmarshal Series.Episodes. EpisodesRaw length: %d, content preview: %s. Using reflective unmarshalling.", 
+		len(aux.EpisodesRaw), string(aux.EpisodesRaw[:previewLen]))
 	if unmarshalErr := unmarshalReflectiveFields(data, s, "Series"); unmarshalErr != nil {
 		errMsg := fmt.Sprintf("UnmarshalJSON error for Series: %v", unmarshalErr)
 		dataMsg := fmt.Sprintf("Problematic JSON data for Series: %s", string(data))
 		log.Println(errMsg)
 		log.Println(dataMsg)
+	} else {
+		// Log success with episode count
+		totalEpisodes := 0
+		for _, episodes := range s.Episodes {
+			totalEpisodes += len(episodes)
+		}
+		log.Printf("Warning: Series.Episodes unmarshaled via reflective method. Found %d seasons with %d total episodes", 
+			len(s.Episodes), totalEpisodes)
 	}
 
 	return nil

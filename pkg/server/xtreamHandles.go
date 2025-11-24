@@ -706,18 +706,30 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 				continue
 			}
 			
+			// Debug: Log episode information to help diagnose issues
+			episodesCount := 0
+			if seriesInfo.Episodes != nil {
+				for _, episodes := range seriesInfo.Episodes {
+					episodesCount += len(episodes)
+				}
+			}
+			
 			// Skip if series has no episodes
-			if seriesInfo.Episodes == nil || len(seriesInfo.Episodes) == 0 {
+			if seriesInfo.Episodes == nil || len(seriesInfo.Episodes) == 0 || episodesCount == 0 {
 				// Check if we have series info but no episodes (might indicate API issue or legitimately no episodes)
 				hasInfo := seriesInfo.Info.Name != "" || seriesInfo.Info.Cover != ""
 				if hasInfo {
-					log.Printf("[iptv-proxy] DEBUG: Series %s (ID: %s) has series info but no episodes (Info.Name: %s, Episodes map len: %d), skipping\n", 
-						serieNameStr, serieIDStr, seriesInfo.Info.Name, len(seriesInfo.Episodes))
+					log.Printf("[iptv-proxy] DEBUG: Series %s (ID: %s) has series info but no episodes (Info.Name: %s, Episodes map len: %d, total episodes: %d), skipping\n", 
+						serieNameStr, serieIDStr, seriesInfo.Info.Name, len(seriesInfo.Episodes), episodesCount)
 				} else {
-					log.Printf("[iptv-proxy] DEBUG: Series %s (ID: %s) has no episodes and no series info, skipping\n", serieNameStr, serieIDStr)
+					log.Printf("[iptv-proxy] DEBUG: Series %s (ID: %s) has no episodes and no series info (Episodes map len: %d, total episodes: %d), skipping\n", 
+						serieNameStr, serieIDStr, len(seriesInfo.Episodes), episodesCount)
 				}
 				continue
 			}
+			
+			log.Printf("[iptv-proxy] DEBUG: Series %s (ID: %s) has %d seasons with %d total episodes\n", 
+				serieNameStr, serieIDStr, len(seriesInfo.Episodes), episodesCount)
 			
 			// Generate M3U entries for each episode
 			for seasonKey, episodes := range seriesInfo.Episodes {
