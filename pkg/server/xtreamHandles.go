@@ -139,8 +139,10 @@ func (c *Config) cacheXtreamM3u(playlist *m3u.Playlist, cacheName string) error 
 	return nil
 }
 
-func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Playlist, error) {
-	log.Printf("[iptv-proxy] DEBUG: Starting xtreamGenerateM3u with extension: %s\n", extension)
+func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playlist, error) {
+	// Format the extension from output parameter
+	extension := getExtensionFromOutput(output)
+	log.Printf("[iptv-proxy] DEBUG: Starting xtreamGenerateM3u with output: %s, extension: %s\n", output, extension)
 	
 	log.Printf("[iptv-proxy] DEBUG: Creating Xtream client with user: %s, baseURL: %s\n", c.XtreamUser.String(), c.XtreamBaseURL)
 	
@@ -229,7 +231,6 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Pla
 	// prefix with "live" if there is an extension.
 	var prefix string
 	if extension != "" {
-		extension = "." + extension
 		prefix = "live/"
 	}
 
@@ -795,14 +796,42 @@ func (c *Config) xtreamGet(ctx *gin.Context) {
 	ctx.File(path)
 }
 
+// getExtensionFromOutput maps Xtream output formats to file extensions
+// Returns the extension with a leading dot, or empty string if output is empty
+func getExtensionFromOutput(output string) string {
+	if output == "" {
+		return ""
+	}
+	
+	// Map common output formats to standard file extensions
+	extensionMap := map[string]string{
+		"mpegts": "ts",
+		"ts":     "ts",
+		"hls":    "m3u8",
+		"mkv":    "mkv",
+		"mp4":    "mp4",
+		"flv":    "flv",
+		"webm":   "webm",
+	}
+	
+	// Check if we have a mapping, otherwise use the output value directly
+	if ext, ok := extensionMap[output]; ok {
+		return "." + ext
+	}
+	
+	// Default: use output value as extension
+	return "." + output
+}
+
 func (c *Config) xtreamApiGet(ctx *gin.Context) {
 	const (
 		apiGet = "apiget"
 	)
 
 	var (
-		extension = ctx.Query("output")
-		cacheName = apiGet + extension
+		output    = ctx.Query("output")
+		extension = getExtensionFromOutput(output)
+		cacheName = apiGet + output
 	)
 
 	log.Printf("[iptv-proxy] DEBUG: xtreamApiGet called with extension: %s, cacheName: %s\n", extension, cacheName)
@@ -819,7 +848,7 @@ func (c *Config) xtreamApiGet(ctx *gin.Context) {
 		log.Printf("[iptv-proxy] %v | %s | xtream cache API m3u file\n", time.Now().Format("2006/01/02 - 15:04:05"), ctx.ClientIP())
 		log.Printf("[iptv-proxy] DEBUG: Cache expired or missing, generating new M3U...\n")
 		startTime := time.Now()
-		playlist, err := c.xtreamGenerateM3u(ctx, extension)
+		playlist, err := c.xtreamGenerateM3u(ctx, output)
 		elapsed := time.Since(startTime)
 		if err != nil {
 			log.Printf("[iptv-proxy] ERROR: xtreamGenerateM3u failed after %v: %v\n", elapsed, err)
