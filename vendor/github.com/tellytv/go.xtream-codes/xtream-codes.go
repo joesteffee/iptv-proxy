@@ -235,6 +235,15 @@ func (c *XtreamClient) GetSeriesInfo(seriesID string) (*Series, error) {
 		return nil, seriesErr
 	}
 
+	// Handle empty array response (API sometimes returns [] for invalid/missing series)
+	if len(seriesData) == 2 && string(seriesData) == "[]" {
+		return &Series{
+			Episodes: make(map[string][]SeriesEpisode),
+			Info:     SeriesInfo{},
+			Seasons:  []interface{}{},
+		}, nil
+	}
+
 	seriesInfo := &Series{}
 
 	jsonErr := json.Unmarshal(seriesData, &seriesInfo)
