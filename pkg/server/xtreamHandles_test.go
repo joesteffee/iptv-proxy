@@ -357,8 +357,11 @@ func TestXtreamGet_UserAgent(t *testing.T) {
 
 	cfg.xtreamGet(ctx)
 
-	if capturedUserAgent != "Test-User-Agent/1.0" {
-		t.Errorf("Expected User-Agent 'Test-User-Agent/1.0', got '%s'", capturedUserAgent)
+	// We now always use a browser-like User-Agent to avoid Cloudflare blocking,
+	// regardless of what the client sends (especially important for Python requests)
+	expectedUserAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	if capturedUserAgent != expectedUserAgent {
+		t.Errorf("Expected User-Agent '%s', got '%s'", expectedUserAgent, capturedUserAgent)
 	}
 }
 
