@@ -508,6 +508,11 @@ func (s *Stream) UnmarshalJSON(data []byte) error {
 
 // UnmarshalJSON implements custom unmarshaling for SeriesInfo
 func (si *SeriesInfo) UnmarshalJSON(data []byte) error {
+	// Handle empty array or null response
+	if len(data) == 0 || string(data) == "null" || string(data) == "[]" {
+		return nil
+	}
+
 	type Alias SeriesInfo
 	aux := &struct {
 		*Alias
@@ -521,9 +526,14 @@ func (si *SeriesInfo) UnmarshalJSON(data []byte) error {
 	dataMsg := fmt.Sprintf("Problematic JSON data for SeriesInfo: %s", string(data))
 
 	if initialErr != nil {
-		log.Printf("Warning: Failed to unmarshal SeriesInfo. Using reflective unmarshalling.")
+		// Try reflective unmarshalling as fallback
 		if unmarshalErr := unmarshalReflectiveFields(data, si, "SeriesInfo"); unmarshalErr != nil {
+			// Both methods failed, log the error
 			logInitialError = true
+			log.Printf("Warning: Failed to unmarshal SeriesInfo. Both standard and reflective unmarshalling failed.")
+		} else {
+			// Reflective unmarshalling succeeded, so we can ignore the initial error
+			// This is common when the API returns extra fields or slightly different formats
 		}
 	}
 

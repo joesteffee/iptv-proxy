@@ -53,10 +53,9 @@ func (c *Config) routes(r *gin.RouterGroup) {
 }
 
 func (c *Config) xtreamRoutes(r *gin.RouterGroup) {
-	getphp := gin.HandlerFunc(c.xtreamGet)
-	if c.XtreamGenerateApiGet {
-		getphp = c.xtreamApiGet
-	}
+	// Always use xtreamApiGet for get.php to ensure category filters are applied
+	// This ensures that category filters set via the UI are respected
+	getphp := c.xtreamApiGet
 	r.GET("/get.php", c.authenticate, getphp)
 	r.POST("/get.php", c.authenticate, getphp)
 	r.GET("/apiget", c.authenticate, c.xtreamApiGet)

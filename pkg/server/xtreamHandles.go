@@ -39,6 +39,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jamesnetherton/m3u"
 	xtreamapi "github.com/pierre-emmanuelJ/iptv-proxy/pkg/xtream-proxy"
+	xtreamcodes "github.com/tellytv/go.xtream-codes"
 	uuid "github.com/satori/go.uuid"
 )
 
@@ -664,15 +665,57 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 			}
 			
 			// Fetch series info to get episodes with season/episode information
-			seriesInfo, seriesErr := client.GetSeriesInfo(serieIDStr)
+			// Add retry logic for transient errors (500, 520, etc.)
+			var seriesInfo *xtreamcodes.Series
+			var seriesErr error
+			seriesInfoRetries := 3
+			for attempt := 1; attempt <= seriesInfoRetries; attempt++ {
+				seriesInfo, seriesErr = client.GetSeriesInfo(serieIDStr)
+				if seriesErr == nil && seriesInfo != nil {
+					break
+				}
+				
+				// Check if it's a transient error (500, 520, etc.) that we should retry
+				shouldRetry := false
+				if seriesErr != nil {
+					errStr := seriesErr.Error()
+					if strings.Contains(errStr, "500") || strings.Contains(errStr, "status code was 500") ||
+						strings.Contains(errStr, "520") || strings.Contains(errStr, "status code was 520") ||
+						strings.Contains(errStr, "502") || strings.Contains(errStr, "status code was 502") ||
+						strings.Contains(errStr, "503") || strings.Contains(errStr, "status code was 503") {
+						shouldRetry = true
+					}
+				}
+				
+				if shouldRetry && attempt < seriesInfoRetries {
+					waitTime := time.Duration(attempt) * 1 * time.Second
+					log.Printf("[iptv-proxy] WARNING: Transient error getting series info for %s (ID: %s) (attempt %d/%d), retrying in %v: %v\n", serieNameStr, serieIDStr, attempt, seriesInfoRetries, waitTime, seriesErr)
+					time.Sleep(waitTime)
+					continue
+				}
+				
+				// If we've exhausted retries or it's not a retryable error, log and break
+				if attempt == seriesInfoRetries {
+					log.Printf("[iptv-proxy] WARNING: Failed to get series info for %s (ID: %s) after %d attempts: %v\n", serieNameStr, serieIDStr, seriesInfoRetries, seriesErr)
+				}
+				break
+			}
+			
 			if seriesErr != nil || seriesInfo == nil {
-				log.Printf("[iptv-proxy] WARNING: Failed to get series info for %s (ID: %s): %v\n", serieNameStr, serieIDStr, seriesErr)
+				// Skip this series and continue with the next one
 				continue
 			}
 			
 			// Skip if series has no episodes
 			if seriesInfo.Episodes == nil || len(seriesInfo.Episodes) == 0 {
-				log.Printf("[iptv-proxy] DEBUG: Series %s (ID: %s) has no episodes, skipping\n", serieNameStr, serieIDStr)
+				// Check if we have series info but no episodes (might indicate API issue or legitimately no episodes)
+				hasInfo := seriesInfo.Info.Name != "" || seriesInfo.Info.Cover != ""
+				if hasInfo {
+					log.Printf("[iptv-proxy] DEBUG: Series %s (ID: %s) has series info but no episodes (Info.Name: %s, Episodes map len: %d), skipping\n", 
+						serieNameStr, serieIDStr, seriesInfo.Info.Name, len(seriesInfo.Episodes))
+				} else {
+					log.Printf("[iptv-proxy] DEBUG: Series %s (ID: %s) has no episodes and no series info, skipping\n", serieNameStr, serieIDStr)
+				}
 				continue
 			}
 			
