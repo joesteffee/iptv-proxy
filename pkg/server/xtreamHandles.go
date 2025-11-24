@@ -77,11 +77,45 @@ func getFieldValue(v reflect.Value, fieldName string) string {
 	}
 	
 	if v.Kind() == reflect.Map {
-		key := reflect.ValueOf(fieldName)
-		fieldVal := v.MapIndex(key)
-		if fieldVal.IsValid() && !fieldVal.IsZero() {
-			return fmt.Sprint(fieldVal.Interface())
+		// Map of Go struct field names to JSON field names
+		jsonFieldMap := map[string][]string{
+			"ID":            {"category_id", "id", "ID", "vod_id", "series_id", "stream_id", "epg_channel_id"},
+			"Name":          {"category_name", "name", "Name", "title", "Title"},
+			"EPGChannelID":  {"epg_channel_id", "epgchannelid", "EPGChannelID"},
+			"Icon":          {"stream_icon", "icon", "Icon", "cover", "Cover"},
+			"ContainerExtension": {"container_extension", "containerextension", "ContainerExtension"},
+			"SeriesID":      {"series_id", "seriesid", "SeriesID"},
+			"Cover":         {"cover", "Cover", "cover_image"},
 		}
+		
+		// Get possible JSON field names for this Go field name
+		possibleNames := []string{fieldName} // Try exact match first
+		if names, ok := jsonFieldMap[fieldName]; ok {
+			possibleNames = append(possibleNames, names...)
+		} else {
+			// Fallback: try common variations
+			possibleNames = append(possibleNames,
+				strings.ToLower(fieldName),
+				strings.ToUpper(fieldName),
+			)
+			if len(fieldName) > 0 {
+				firstLower := strings.ToLower(string(fieldName[0])) + fieldName[1:]
+				possibleNames = append(possibleNames, firstLower)
+			}
+		}
+		
+		// Try each possible field name
+		for _, jsonName := range possibleNames {
+			key := reflect.ValueOf(jsonName)
+			fieldVal := v.MapIndex(key)
+			if fieldVal.IsValid() && !fieldVal.IsZero() {
+				val := fmt.Sprint(fieldVal.Interface())
+				if val != "" && val != "<nil>" {
+					return val
+				}
+			}
+		}
+		
 		return ""
 	}
 	
@@ -1562,5 +1596,159 @@ func (c *Config) hlsXtreamStream(ctx *gin.Context, oriURL *url.URL) {
 	}
 
 	ctx.Status(resp.StatusCode)
+}
+
+// Refresh callback functions for cache refresh worker
+
+// refreshLiveCategories refreshes live categories cache
+func (c *Config) refreshLiveCategories(key string) error {
+	userAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	client, err := xtreamapi.New(c.XtreamUser.String(), c.XtreamPassword.String(), c.XtreamBaseURL, userAgent)
+	if err != nil {
+		return err
+	}
+
+	categories, err := client.GetLiveCategories()
+	if err != nil {
+		return err
+	}
+
+	cacheTTL := 7 * 24 * time.Hour
+	return c.redisCache.SetJSON(key, categories, cacheTTL)
+}
+
+// refreshLiveStreams refreshes live streams for a category
+func (c *Config) refreshLiveStreams(key string) error {
+	// Extract category ID from key: iptv:live:streams:{categoryID}
+	parts := strings.Split(key, ":")
+	if len(parts) != 4 {
+		return fmt.Errorf("invalid cache key format: %s", key)
+	}
+	categoryID := parts[3]
+
+	userAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	client, err := xtreamapi.New(c.XtreamUser.String(), c.XtreamPassword.String(), c.XtreamBaseURL, userAgent)
+	if err != nil {
+		return err
+	}
+
+	streams, err := client.GetLiveStreams(categoryID)
+	if err != nil {
+		return err
+	}
+
+	cacheTTL := 7 * 24 * time.Hour
+	return c.redisCache.SetJSON(key, streams, cacheTTL)
+}
+
+// refreshVodCategories refreshes VOD categories cache
+func (c *Config) refreshVodCategories(key string) error {
+	userAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	client, err := xtreamapi.New(c.XtreamUser.String(), c.XtreamPassword.String(), c.XtreamBaseURL, userAgent)
+	if err != nil {
+		return err
+	}
+
+	categories, err := client.GetVideoOnDemandCategories()
+	if err != nil {
+		return err
+	}
+
+	cacheTTL := 7 * 24 * time.Hour
+	return c.redisCache.SetJSON(key, categories, cacheTTL)
+}
+
+// refreshVodStreams refreshes VOD streams for a category
+func (c *Config) refreshVodStreams(key string) error {
+	// Extract category ID from key: iptv:vod:streams:{categoryID}
+	parts := strings.Split(key, ":")
+	if len(parts) != 4 {
+		return fmt.Errorf("invalid cache key format: %s", key)
+	}
+	categoryID := parts[3]
+
+	userAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	client, err := xtreamapi.New(c.XtreamUser.String(), c.XtreamPassword.String(), c.XtreamBaseURL, userAgent)
+	if err != nil {
+		return err
+	}
+
+	streams, err := client.GetVideoOnDemandStreams(categoryID)
+	if err != nil {
+		return err
+	}
+
+	cacheTTL := 7 * 24 * time.Hour
+	return c.redisCache.SetJSON(key, streams, cacheTTL)
+}
+
+// refreshSeriesCategories refreshes series categories cache
+func (c *Config) refreshSeriesCategories(key string) error {
+	userAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	client, err := xtreamapi.New(c.XtreamUser.String(), c.XtreamPassword.String(), c.XtreamBaseURL, userAgent)
+	if err != nil {
+		return err
+	}
+
+	categories, err := client.GetSeriesCategories()
+	if err != nil {
+		return err
+	}
+
+	cacheTTL := 7 * 24 * time.Hour
+	return c.redisCache.SetJSON(key, categories, cacheTTL)
+}
+
+// refreshSeriesList refreshes series list for a category
+func (c *Config) refreshSeriesList(key string) error {
+	// Extract category ID from key: iptv:series:list:{categoryID}
+	parts := strings.Split(key, ":")
+	if len(parts) != 4 {
+		return fmt.Errorf("invalid cache key format: %s", key)
+	}
+	categoryID := parts[3]
+
+	userAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	client, err := xtreamapi.New(c.XtreamUser.String(), c.XtreamPassword.String(), c.XtreamBaseURL, userAgent)
+	if err != nil {
+		return err
+	}
+
+	series, err := client.GetSeries(categoryID)
+	if err != nil {
+		return err
+	}
+
+	cacheTTL := 7 * 24 * time.Hour
+	return c.redisCache.SetJSON(key, series, cacheTTL)
+}
+
+// refreshSeriesInfo refreshes series info (episodes) for a series
+func (c *Config) refreshSeriesInfo(key string) error {
+	// Extract series ID from key: iptv:series:info:{seriesID}
+	parts := strings.Split(key, ":")
+	if len(parts) != 4 {
+		return fmt.Errorf("invalid cache key format: %s", key)
+	}
+	seriesID := parts[3]
+
+	userAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	client, err := xtreamapi.New(c.XtreamUser.String(), c.XtreamPassword.String(), c.XtreamBaseURL, userAgent)
+	if err != nil {
+		return err
+	}
+
+	seriesInfo, err := client.GetSeriesInfo(seriesID)
+	if err != nil {
+		return err
+	}
+
+	// Check if we got valid data
+	if seriesInfo == nil || (seriesInfo.Info.Name == "" && (seriesInfo.Episodes == nil || len(seriesInfo.Episodes) == 0)) {
+		return fmt.Errorf("empty response for series ID %s", seriesID)
+	}
+
+	cacheTTL := 7 * 24 * time.Hour
+	return c.redisCache.SetJSON(key, seriesInfo, cacheTTL)
 }
 
