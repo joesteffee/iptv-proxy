@@ -175,6 +175,9 @@ type Config struct {
 	proxyfiedM3UPath string
 
 	endpointAntiColision string
+
+	// Redis cache for Xtream API responses
+	redisCache *RedisCache
 }
 
 // NewServer initialize a new server configuration
@@ -192,12 +195,23 @@ func NewServer(config *config.ProxyConfig) (*Config, error) {
 		endpointAntiColision = trimmedCustomId
 	}
 
+	// Initialize Redis cache if configured
+	var redisCache *RedisCache
+	if config.RedisURL != "" {
+		var err error
+		redisCache, err = NewRedisCache(config.RedisURL)
+		if err != nil {
+			log.Printf("[iptv-proxy] WARNING: Failed to initialize Redis cache: %v. Continuing without cache.", err)
+		}
+	}
+
 	return &Config{
 		config,
 		&p,
 		nil,
 		defaultProxyfiedM3UPath,
 		endpointAntiColision,
+		redisCache,
 	}, nil
 }
 

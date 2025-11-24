@@ -102,6 +102,7 @@ var rootCmd = &cobra.Command{
 			XtreamGenerateApiGet: viper.GetBool("xtream-api-get"),
 			RateLimitRetryTimeout: rateLimitRetryTimeout,
 			CategoryFiltersPath:   categoryFiltersPath,
+			RedisURL:             viper.GetString("redis-url"),
 		}
 
 		if conf.AdvertisedPort == 0 {
@@ -152,6 +153,7 @@ func init() {
 	rootCmd.Flags().BoolP("xtream-api-get", "", false, "Generate get.php from xtream API instead of get.php original endpoint")
 	rootCmd.Flags().Int("rate-limit-retry-timeout", 10, "Rate limit retry timeout in minutes (default: 10, env: RATE_LIMIT_RETRY_TIMEOUT)")
 	rootCmd.Flags().String("category-filters-path", "", "Path to category filters JSON file (default: /root/iptv/category_filters.json, env: CATEGORY_FILTERS_PATH)")
+	rootCmd.Flags().String("redis-url", "", "Redis connection URL for caching (e.g., redis://localhost:6379, env: REDIS_URL)")
 
 	if e := viper.BindPFlags(rootCmd.Flags()); e != nil {
 		log.Fatal("error binding PFlags to viper")
