@@ -252,6 +252,12 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Pla
 			categoryNameStr = categoryName.String()
 		}
 		
+		// Skip disabled categories
+		if globalCategoryFilter.isCategoryDisabled("live", categoryIDStr) {
+			log.Printf("[iptv-proxy] DEBUG: Skipping disabled live category: %s (ID: %s)\n", categoryNameStr, categoryIDStr)
+			continue
+		}
+		
 		// Log progress every 50 categories to reduce log spam
 		if i%50 == 0 || i == catValue.Len()-1 {
 			log.Printf("[iptv-proxy] DEBUG: Processing category %d/%d: %s (ID: %s) - %d tracks so far\n", i+1, catValue.Len(), categoryNameStr, categoryIDStr, totalTracks)
@@ -404,6 +410,12 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Pla
 			categoryNameStr = categoryName.String()
 		}
 		
+		// Skip disabled categories
+		if globalCategoryFilter.isCategoryDisabled("movies", categoryIDStr) {
+			log.Printf("[iptv-proxy] DEBUG: Skipping disabled movies category: %s (ID: %s)\n", categoryNameStr, categoryIDStr)
+			continue
+		}
+		
 		if i%50 == 0 || i == vodCatsLen-1 {
 			log.Printf("[iptv-proxy] DEBUG: Processing VOD category %d/%d: %s (ID: %s) - %d VOD tracks so far\n", i+1, vodCatsLen, categoryNameStr, categoryIDStr, vodTracks)
 		}
@@ -553,6 +565,12 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Pla
 		categoryNameStr := ""
 		if categoryName.IsValid() {
 			categoryNameStr = categoryName.String()
+		}
+		
+		// Skip disabled categories
+		if globalCategoryFilter.isCategoryDisabled("series", categoryIDStr) {
+			log.Printf("[iptv-proxy] DEBUG: Skipping disabled series category: %s (ID: %s)\n", categoryNameStr, categoryIDStr)
+			continue
 		}
 		
 		if i%50 == 0 || i == seriesCatsLen-1 {
