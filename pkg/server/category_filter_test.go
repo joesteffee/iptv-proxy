@@ -9,9 +9,9 @@ import (
 	"testing"
 )
 
-func TestCategoryFilter_isCategoryDisabled(t *testing.T) {
+func TestCategoryFilter_isCategoryEnabled(t *testing.T) {
 	cf := &categoryFilter{
-		disabledCats: map[string]map[string]bool{
+		enabledCats: map[string]map[string]bool{
 			"live": {
 				"1": true,
 				"2": false,
@@ -28,54 +28,54 @@ func TestCategoryFilter_isCategoryDisabled(t *testing.T) {
 		categoryID string
 		expected   bool
 	}{
-		{"disabled live category", "live", "1", true},
-		{"enabled live category", "live", "2", false},
+		{"enabled live category", "live", "1", true},
+		{"disabled live category", "live", "2", false},
 		{"non-existent live category", "live", "999", false},
-		{"disabled movies category", "movies", "10", true},
+		{"enabled movies category", "movies", "10", true},
 		{"non-existent movies category", "movies", "999", false},
 		{"non-existent type", "series", "1", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := cf.isCategoryDisabled(tt.catType, tt.categoryID)
+			result := cf.isCategoryEnabled(tt.catType, tt.categoryID)
 			if result != tt.expected {
-				t.Errorf("isCategoryDisabled(%q, %q) = %v, expected %v", tt.catType, tt.categoryID, result, tt.expected)
+				t.Errorf("isCategoryEnabled(%q, %q) = %v, expected %v", tt.catType, tt.categoryID, result, tt.expected)
 			}
 		})
 	}
 }
 
-func TestCategoryFilter_setCategoryDisabled(t *testing.T) {
+func TestCategoryFilter_setCategoryEnabled(t *testing.T) {
 	cf := &categoryFilter{
-		disabledCats: make(map[string]map[string]bool),
-	}
-
-	// Test setting disabled
-	cf.setCategoryDisabled("live", "1", true)
-	if !cf.isCategoryDisabled("live", "1") {
-		t.Error("Expected category to be disabled after setCategoryDisabled(true)")
+		enabledCats: make(map[string]map[string]bool),
 	}
 
 	// Test setting enabled
-	cf.setCategoryDisabled("live", "1", false)
-	if cf.isCategoryDisabled("live", "1") {
-		t.Error("Expected category to be enabled after setCategoryDisabled(false)")
+	cf.setCategoryEnabled("live", "1", true)
+	if !cf.isCategoryEnabled("live", "1") {
+		t.Error("Expected category to be enabled after setCategoryEnabled(true)")
+	}
+
+	// Test setting disabled
+	cf.setCategoryEnabled("live", "1", false)
+	if cf.isCategoryEnabled("live", "1") {
+		t.Error("Expected category to be disabled after setCategoryEnabled(false)")
 	}
 
 	// Test creating new type
-	cf.setCategoryDisabled("series", "5", true)
-	if !cf.isCategoryDisabled("series", "5") {
-		t.Error("Expected new type to be created and category disabled")
+	cf.setCategoryEnabled("series", "5", true)
+	if !cf.isCategoryEnabled("series", "5") {
+		t.Error("Expected new type to be created and category enabled")
 	}
 }
 
-func TestCategoryFilter_setDisabledCategories(t *testing.T) {
+func TestCategoryFilter_setEnabledCategories(t *testing.T) {
 	cf := &categoryFilter{
-		disabledCats: make(map[string]map[string]bool),
+		enabledCats: make(map[string]map[string]bool),
 	}
 
-	newDisabled := map[string]map[string]bool{
+	newEnabled := map[string]map[string]bool{
 		"live": {
 			"1": true,
 			"2": true,
@@ -88,26 +88,26 @@ func TestCategoryFilter_setDisabledCategories(t *testing.T) {
 		},
 	}
 
-	cf.setDisabledCategories(newDisabled)
+	cf.setEnabledCategories(newEnabled)
 
 	// Verify all categories are set correctly
-	if !cf.isCategoryDisabled("live", "1") {
-		t.Error("Expected live category 1 to be disabled")
+	if !cf.isCategoryEnabled("live", "1") {
+		t.Error("Expected live category 1 to be enabled")
 	}
-	if !cf.isCategoryDisabled("live", "2") {
-		t.Error("Expected live category 2 to be disabled")
+	if !cf.isCategoryEnabled("live", "2") {
+		t.Error("Expected live category 2 to be enabled")
 	}
-	if !cf.isCategoryDisabled("movies", "10") {
-		t.Error("Expected movies category 10 to be disabled")
+	if !cf.isCategoryEnabled("movies", "10") {
+		t.Error("Expected movies category 10 to be enabled")
 	}
-	if !cf.isCategoryDisabled("series", "20") {
-		t.Error("Expected series category 20 to be disabled")
+	if !cf.isCategoryEnabled("series", "20") {
+		t.Error("Expected series category 20 to be enabled")
 	}
 }
 
-func TestCategoryFilter_getDisabledCategories(t *testing.T) {
+func TestCategoryFilter_getEnabledCategories(t *testing.T) {
 	cf := &categoryFilter{
-		disabledCats: map[string]map[string]bool{
+		enabledCats: map[string]map[string]bool{
 			"live": {
 				"1": true,
 				"2": false,
@@ -118,22 +118,22 @@ func TestCategoryFilter_getDisabledCategories(t *testing.T) {
 		},
 	}
 
-	result := cf.getDisabledCategories()
+	result := cf.getEnabledCategories()
 
 	// Verify it's a copy (not the same reference)
-	if reflect.ValueOf(result).Pointer() == reflect.ValueOf(cf.disabledCats).Pointer() {
-		t.Error("getDisabledCategories should return a copy, not the original map")
+	if reflect.ValueOf(result).Pointer() == reflect.ValueOf(cf.enabledCats).Pointer() {
+		t.Error("getEnabledCategories should return a copy, not the original map")
 	}
 
 	// Verify content
 	if !result["live"]["1"] {
-		t.Error("Expected live category 1 to be disabled in result")
+		t.Error("Expected live category 1 to be enabled in result")
 	}
 	if result["live"]["2"] {
-		t.Error("Expected live category 2 to be enabled in result")
+		t.Error("Expected live category 2 to be disabled in result")
 	}
 	if !result["movies"]["10"] {
-		t.Error("Expected movies category 10 to be disabled in result")
+		t.Error("Expected movies category 10 to be enabled in result")
 	}
 }
 
@@ -143,7 +143,7 @@ func TestCategoryFilter_saveToFile(t *testing.T) {
 	filePath := filepath.Join(tmpDir, "category_filters.json")
 
 	cf := &categoryFilter{
-		disabledCats: map[string]map[string]bool{
+		enabledCats: map[string]map[string]bool{
 			"live": {
 				"1": true,
 				"2": true,
@@ -176,19 +176,19 @@ func TestCategoryFilter_saveToFile(t *testing.T) {
 	}
 
 	if !loaded["live"]["1"] {
-		t.Error("Expected live category 1 to be disabled in saved file")
+		t.Error("Expected live category 1 to be enabled in saved file")
 	}
 	if !loaded["live"]["2"] {
-		t.Error("Expected live category 2 to be disabled in saved file")
+		t.Error("Expected live category 2 to be enabled in saved file")
 	}
 	if !loaded["movies"]["10"] {
-		t.Error("Expected movies category 10 to be disabled in saved file")
+		t.Error("Expected movies category 10 to be enabled in saved file")
 	}
 }
 
 func TestCategoryFilter_saveToFile_emptyPath(t *testing.T) {
 	cf := &categoryFilter{
-		disabledCats: map[string]map[string]bool{
+		enabledCats: map[string]map[string]bool{
 			"live": {"1": true},
 		},
 	}
@@ -226,7 +226,7 @@ func TestCategoryFilter_loadFromFile(t *testing.T) {
 	}
 
 	cf := &categoryFilter{
-		disabledCats: make(map[string]map[string]bool),
+		enabledCats: make(map[string]map[string]bool),
 	}
 
 	err = cf.loadFromFile(filePath)
@@ -235,14 +235,14 @@ func TestCategoryFilter_loadFromFile(t *testing.T) {
 	}
 
 	// Verify loaded data
-	if !cf.isCategoryDisabled("live", "1") {
-		t.Error("Expected live category 1 to be disabled after load")
+	if !cf.isCategoryEnabled("live", "1") {
+		t.Error("Expected live category 1 to be enabled after load")
 	}
-	if !cf.isCategoryDisabled("live", "2") {
-		t.Error("Expected live category 2 to be disabled after load")
+	if !cf.isCategoryEnabled("live", "2") {
+		t.Error("Expected live category 2 to be enabled after load")
 	}
-	if !cf.isCategoryDisabled("movies", "10") {
-		t.Error("Expected movies category 10 to be disabled after load")
+	if !cf.isCategoryEnabled("movies", "10") {
+		t.Error("Expected movies category 10 to be enabled after load")
 	}
 }
 
@@ -252,7 +252,7 @@ func TestCategoryFilter_loadFromFile_notExists(t *testing.T) {
 	filePath := filepath.Join(tmpDir, "non_existent.json")
 
 	cf := &categoryFilter{
-		disabledCats: make(map[string]map[string]bool),
+		enabledCats: make(map[string]map[string]bool),
 	}
 
 	// Should not error if file doesn't exist
@@ -261,16 +261,16 @@ func TestCategoryFilter_loadFromFile_notExists(t *testing.T) {
 		t.Errorf("loadFromFile with non-existent file should not error, got: %v", err)
 	}
 
-	// Should have empty disabled categories
-	result := cf.getDisabledCategories()
+	// Should have empty enabled categories (all disabled by default)
+	result := cf.getEnabledCategories()
 	if len(result) != 0 {
-		t.Errorf("Expected empty disabled categories after loading non-existent file, got: %v", result)
+		t.Errorf("Expected empty enabled categories after loading non-existent file, got: %v", result)
 	}
 }
 
 func TestCategoryFilter_loadFromFile_emptyPath(t *testing.T) {
 	cf := &categoryFilter{
-		disabledCats: make(map[string]map[string]bool),
+		enabledCats: make(map[string]map[string]bool),
 	}
 
 	// Should not error with empty path
@@ -282,7 +282,7 @@ func TestCategoryFilter_loadFromFile_emptyPath(t *testing.T) {
 
 func TestCategoryFilter_concurrentAccess(t *testing.T) {
 	cf := &categoryFilter{
-		disabledCats: make(map[string]map[string]bool),
+		enabledCats: make(map[string]map[string]bool),
 	}
 
 	var wg sync.WaitGroup
@@ -299,13 +299,13 @@ func TestCategoryFilter_concurrentAccess(t *testing.T) {
 				catID := string(rune(id)) + string(rune(j))
 				
 				// Write
-				cf.setCategoryDisabled(catType, catID, true)
+				cf.setCategoryEnabled(catType, catID, true)
 				
 				// Read
-				cf.isCategoryDisabled(catType, catID)
+				cf.isCategoryEnabled(catType, catID)
 				
 				// Get all
-				cf.getDisabledCategories()
+				cf.getEnabledCategories()
 			}
 		}(i)
 	}
@@ -320,7 +320,7 @@ func TestCategoryFilter_saveAndLoadRoundTrip(t *testing.T) {
 	filePath := filepath.Join(tmpDir, "category_filters.json")
 
 	original := &categoryFilter{
-		disabledCats: map[string]map[string]bool{
+		enabledCats: map[string]map[string]bool{
 			"live": {
 				"1": true,
 				"2": true,
@@ -343,7 +343,7 @@ func TestCategoryFilter_saveAndLoadRoundTrip(t *testing.T) {
 
 	// Load into new filter
 	loaded := &categoryFilter{
-		disabledCats: make(map[string]map[string]bool),
+		enabledCats: make(map[string]map[string]bool),
 	}
 
 	if err := loaded.loadFromFile(filePath); err != nil {
@@ -351,8 +351,8 @@ func TestCategoryFilter_saveAndLoadRoundTrip(t *testing.T) {
 	}
 
 	// Compare
-	originalData := original.getDisabledCategories()
-	loadedData := loaded.getDisabledCategories()
+	originalData := original.getEnabledCategories()
+	loadedData := loaded.getEnabledCategories()
 
 	if !reflect.DeepEqual(originalData, loadedData) {
 		t.Errorf("Loaded data doesn't match original:\nOriginal: %v\nLoaded: %v", originalData, loadedData)
@@ -363,15 +363,15 @@ func TestGlobalCategoryFilter(t *testing.T) {
 	// Reset global filter for test
 	originalFilter := globalCategoryFilter
 	globalCategoryFilter = &categoryFilter{
-		disabledCats: make(map[string]map[string]bool),
+		enabledCats: make(map[string]map[string]bool),
 	}
 	defer func() {
 		globalCategoryFilter = originalFilter
 	}()
 
 	// Test global filter operations
-	globalCategoryFilter.setCategoryDisabled("live", "1", true)
-	if !globalCategoryFilter.isCategoryDisabled("live", "1") {
+	globalCategoryFilter.setCategoryEnabled("live", "1", true)
+	if !globalCategoryFilter.isCategoryEnabled("live", "1") {
 		t.Error("Expected global filter to work correctly")
 	}
 
@@ -381,8 +381,8 @@ func TestGlobalCategoryFilter(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			globalCategoryFilter.setCategoryDisabled("live", string(rune(id)), true)
-			globalCategoryFilter.isCategoryDisabled("live", string(rune(id)))
+			globalCategoryFilter.setCategoryEnabled("live", string(rune(id)), true)
+			globalCategoryFilter.isCategoryEnabled("live", string(rune(id)))
 		}(i)
 	}
 	wg.Wait()

@@ -104,7 +104,7 @@ func TestUpdateCategoriesHandler(t *testing.T) {
 	// Reset global filter
 	originalFilter := globalCategoryFilter
 	globalCategoryFilter = &categoryFilter{
-		disabledCats: make(map[string]map[string]bool),
+		enabledCats: make(map[string]map[string]bool),
 	}
 	defer func() {
 		globalCategoryFilter = originalFilter
@@ -117,7 +117,7 @@ func TestUpdateCategoriesHandler(t *testing.T) {
 
 	// Prepare request
 	requestBody := UpdateCategoriesRequest{
-		Disabled: map[string]map[string]bool{
+		Enabled: map[string]map[string]bool{
 			"live": {
 				"1": true,
 				"2": true,
@@ -154,14 +154,14 @@ func TestUpdateCategoriesHandler(t *testing.T) {
 	}
 
 	// Verify categories were set
-	if !globalCategoryFilter.isCategoryDisabled("live", "1") {
-		t.Error("Expected live category 1 to be disabled")
+	if !globalCategoryFilter.isCategoryEnabled("live", "1") {
+		t.Error("Expected live category 1 to be enabled")
 	}
-	if !globalCategoryFilter.isCategoryDisabled("live", "2") {
-		t.Error("Expected live category 2 to be disabled")
+	if !globalCategoryFilter.isCategoryEnabled("live", "2") {
+		t.Error("Expected live category 2 to be enabled")
 	}
-	if !globalCategoryFilter.isCategoryDisabled("movies", "10") {
-		t.Error("Expected movies category 10 to be disabled")
+	if !globalCategoryFilter.isCategoryEnabled("movies", "10") {
+		t.Error("Expected movies category 10 to be enabled")
 	}
 
 	// Verify file was created
@@ -220,7 +220,7 @@ func TestUpdateCategoriesHandler_clearsCache(t *testing.T) {
 	// Reset global filter and cache
 	originalFilter := globalCategoryFilter
 	globalCategoryFilter = &categoryFilter{
-		disabledCats: make(map[string]map[string]bool),
+		enabledCats: make(map[string]map[string]bool),
 	}
 	defer func() {
 		globalCategoryFilter = originalFilter
@@ -236,7 +236,7 @@ func TestUpdateCategoriesHandler_clearsCache(t *testing.T) {
 	cfg := setupTestConfig()
 
 	requestBody := UpdateCategoriesRequest{
-		Disabled: map[string]map[string]bool{
+		Enabled: map[string]map[string]bool{
 			"live": {"1": true},
 		},
 	}
@@ -291,7 +291,7 @@ func TestUpdateCategoriesHandler_fileSaveError(t *testing.T) {
 	// Reset global filter
 	originalFilter := globalCategoryFilter
 	globalCategoryFilter = &categoryFilter{
-		disabledCats: make(map[string]map[string]bool),
+		enabledCats: make(map[string]map[string]bool),
 	}
 	defer func() {
 		globalCategoryFilter = originalFilter
@@ -302,7 +302,7 @@ func TestUpdateCategoriesHandler_fileSaveError(t *testing.T) {
 	cfg.CategoryFiltersPath = "/nonexistent/path/that/cannot/be/created/category_filters.json"
 
 	requestBody := UpdateCategoriesRequest{
-		Disabled: map[string]map[string]bool{
+		Enabled: map[string]map[string]bool{
 			"live": {"1": true},
 		},
 	}
@@ -328,7 +328,7 @@ func TestUpdateCategoriesHandler_noFiltersPath(t *testing.T) {
 	// Reset global filter
 	originalFilter := globalCategoryFilter
 	globalCategoryFilter = &categoryFilter{
-		disabledCats: make(map[string]map[string]bool),
+		enabledCats: make(map[string]map[string]bool),
 	}
 	defer func() {
 		globalCategoryFilter = originalFilter
@@ -338,7 +338,7 @@ func TestUpdateCategoriesHandler_noFiltersPath(t *testing.T) {
 	cfg.CategoryFiltersPath = "" // No path configured
 
 	requestBody := UpdateCategoriesRequest{
-		Disabled: map[string]map[string]bool{
+		Enabled: map[string]map[string]bool{
 			"live": {"1": true},
 		},
 	}
@@ -358,7 +358,7 @@ func TestUpdateCategoriesHandler_noFiltersPath(t *testing.T) {
 	}
 
 	// Verify categories were still set in memory
-	if !globalCategoryFilter.isCategoryDisabled("live", "1") {
+	if !globalCategoryFilter.isCategoryEnabled("live", "1") {
 		t.Error("Expected categories to be set in memory even without file path")
 	}
 }
