@@ -649,7 +649,6 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 			serieName := serieElem.FieldByName("Name")
 			serieID := serieElem.FieldByName("SeriesID")
 			serieCover := serieElem.FieldByName("Cover")
-			serieContainerExt := serieElem.FieldByName("ContainerExtension")
 			
 			serieNameStr := ""
 			if serieName.IsValid() {
@@ -663,50 +662,70 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 			if serieCover.IsValid() {
 				serieCoverStr = serieCover.String()
 			}
-			serieContainerExtStr := ""
-			if serieContainerExt.IsValid() {
-				serieContainerExtStr = serieContainerExt.String()
+			
+			// Fetch series info to get episodes with season/episode information
+			seriesInfo, seriesErr := client.GetSeriesInfo(serieIDStr)
+			if seriesErr != nil || seriesInfo == nil {
+				log.Printf("[iptv-proxy] WARNING: Failed to get series info for %s (ID: %s): %v\n", serieNameStr, serieIDStr, seriesErr)
+				continue
 			}
 			
-			// For series, ContainerExtension is not in SeriesInfo struct from GetSeries()
-			// It's only available in SeriesEpisode from GetSeriesInfo()
-			// Since fetching series info for every series would be too slow,
-			// we'll try to get it from the first episode if ContainerExtension is missing
-			seriesExtension := extension
-			if serieContainerExtStr != "" {
-				seriesExtension = "." + serieContainerExtStr
-			} else {
-				// Try to get container extension from first episode
-				// Only do this if we don't have it from the list response
-				seriesInfo, seriesErr := client.GetSeriesInfo(serieIDStr)
-				if seriesErr == nil && seriesInfo != nil && len(seriesInfo.Episodes) > 0 {
-					// Get first episode from first available season
-					for _, episodes := range seriesInfo.Episodes {
-						if len(episodes) > 0 && episodes[0].ContainerExtension != "" {
-							seriesExtension = "." + episodes[0].ContainerExtension
-							break
-						}
+			// Generate M3U entries for each episode
+			for seasonKey, episodes := range seriesInfo.Episodes {
+				for _, episode := range episodes {
+					// Get season and episode numbers
+					seasonNum := int(episode.Season)
+					episodeNum := int(episode.EpisodeNum)
+					
+					// Format season/episode as S01E01
+					seasonEpisode := fmt.Sprintf("S%02dE%02d", seasonNum, episodeNum)
+					
+					// Build episode name: "Series Name - S01E01 - Episode Title"
+					episodeTitle := episode.Title
+					if episodeTitle == "" && episode.Info != nil {
+						episodeTitle = episode.Info.Name
 					}
+					episodeName := serieNameStr
+					if episodeTitle != "" {
+						episodeName = fmt.Sprintf("%s - %s - %s", serieNameStr, seasonEpisode, episodeTitle)
+					} else {
+						episodeName = fmt.Sprintf("%s - %s", serieNameStr, seasonEpisode)
+					}
+					
+					// Get container extension from episode
+					episodeExtension := extension
+					if episode.ContainerExtension != "" {
+						episodeExtension = "." + episode.ContainerExtension
+					}
+					
+					// Get episode ID
+					episodeID := episode.ID
+					if episodeID == "" {
+						log.Printf("[iptv-proxy] WARNING: Episode %s has no ID, skipping\n", episodeName)
+						continue
+					}
+					
+					track := m3u.Track{Name: episodeName, Length: -1, URI: "", Tags: nil}
+					
+					// Use series cover for episode if available
+					if serieCoverStr != "" {
+						track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-logo", Value: serieCoverStr})
+					}
+					if episodeName != "" {
+						track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-name", Value: episodeName})
+					}
+					if categoryNameStr != "" {
+						track.Tags = append(track.Tags, m3u.Tag{Name: "group-title", Value: categoryNameStr})
+					}
+					
+					// Episodes use /series/ prefix with episode ID
+					track.URI = fmt.Sprintf("%s/series/%s/%s/%s%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, episodeID, episodeExtension)
+					playlist.Tracks = append(playlist.Tracks, track)
+					seriesTracks++
+					totalTracks++
 				}
+				_ = seasonKey // seasonKey is the season number as string, we use episode.Season instead
 			}
-			
-			track := m3u.Track{Name: serieNameStr, Length: -1, URI: "", Tags: nil}
-
-			if serieCoverStr != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-logo", Value: serieCoverStr})
-			}
-			if serieNameStr != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "tvg-name", Value: serieNameStr})
-			}
-			if categoryNameStr != "" {
-				track.Tags = append(track.Tags, m3u.Tag{Name: "group-title", Value: categoryNameStr})
-			}
-
-			// Series use /series/ prefix, SeriesInfo has SeriesID field
-			track.URI = fmt.Sprintf("%s/series/%s/%s/%s%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, serieIDStr, seriesExtension)
-			playlist.Tracks = append(playlist.Tracks, track)
-			seriesTracks++
-			totalTracks++
 		}
 	}
 	log.Printf("[iptv-proxy] DEBUG: Series: Generated %d tracks\n", seriesTracks)
