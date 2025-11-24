@@ -41,61 +41,61 @@ import (
 var defaultProxyfiedM3UPath = filepath.Join(os.TempDir(), uuid.NewV4().String()+".iptv-proxy.m3u")
 var endpointAntiColision = strings.Split(uuid.NewV4().String(), "-")[0]
 
-// categoryFilter manages disabled categories
+// categoryFilter manages enabled categories
 type categoryFilter struct {
-	mu            sync.RWMutex
-	disabledCats  map[string]map[string]bool // type -> categoryID -> disabled
+	mu           sync.RWMutex
+	enabledCats  map[string]map[string]bool // type -> categoryID -> enabled
 }
 
 var globalCategoryFilter = &categoryFilter{
-	disabledCats: make(map[string]map[string]bool),
+	enabledCats: make(map[string]map[string]bool),
 }
 
-// isCategoryDisabled checks if a category is disabled
-func (cf *categoryFilter) isCategoryDisabled(catType, categoryID string) bool {
+// isCategoryEnabled checks if a category is enabled
+func (cf *categoryFilter) isCategoryEnabled(catType, categoryID string) bool {
 	cf.mu.RLock()
 	defer cf.mu.RUnlock()
 	
-	if typeMap, ok := cf.disabledCats[catType]; ok {
+	if typeMap, ok := cf.enabledCats[catType]; ok {
 		return typeMap[categoryID]
 	}
-	return false
+	return false // By default, categories are disabled (not enabled)
 }
 
-// setCategoryDisabled sets the disabled state of a category
-func (cf *categoryFilter) setCategoryDisabled(catType, categoryID string, disabled bool) {
+// setCategoryEnabled sets the enabled state of a category
+func (cf *categoryFilter) setCategoryEnabled(catType, categoryID string, enabled bool) {
 	cf.mu.Lock()
 	defer cf.mu.Unlock()
 	
-	if cf.disabledCats[catType] == nil {
-		cf.disabledCats[catType] = make(map[string]bool)
+	if cf.enabledCats[catType] == nil {
+		cf.enabledCats[catType] = make(map[string]bool)
 	}
-	cf.disabledCats[catType][categoryID] = disabled
+	cf.enabledCats[catType][categoryID] = enabled
 }
 
-// setDisabledCategories sets multiple disabled categories at once
-func (cf *categoryFilter) setDisabledCategories(disabled map[string]map[string]bool) {
+// setEnabledCategories sets multiple enabled categories at once
+func (cf *categoryFilter) setEnabledCategories(enabled map[string]map[string]bool) {
 	cf.mu.Lock()
 	defer cf.mu.Unlock()
-	cf.disabledCats = disabled
+	cf.enabledCats = enabled
 }
 
-// getDisabledCategories returns a copy of disabled categories
-func (cf *categoryFilter) getDisabledCategories() map[string]map[string]bool {
+// getEnabledCategories returns a copy of enabled categories
+func (cf *categoryFilter) getEnabledCategories() map[string]map[string]bool {
 	cf.mu.RLock()
 	defer cf.mu.RUnlock()
 	
 	result := make(map[string]map[string]bool)
-	for catType, typeMap := range cf.disabledCats {
+	for catType, typeMap := range cf.enabledCats {
 		result[catType] = make(map[string]bool)
-		for catID, disabled := range typeMap {
-			result[catType][catID] = disabled
+		for catID, enabled := range typeMap {
+			result[catType][catID] = enabled
 		}
 	}
 	return result
 }
 
-// loadFromFile loads disabled categories from a JSON file
+// loadFromFile loads enabled categories from a JSON file
 func (cf *categoryFilter) loadFromFile(filePath string) error {
 	if filePath == "" {
 		return nil // No file path configured, skip loading
@@ -107,40 +107,40 @@ func (cf *categoryFilter) loadFromFile(filePath string) error {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// File doesn't exist yet, that's okay - start with empty filters
-			log.Printf("[iptv-proxy] Category filters file not found at %s, starting with empty filters\n", filePath)
+			// File doesn't exist yet, that's okay - start with empty filters (all disabled)
+			log.Printf("[iptv-proxy] Category filters file not found at %s, starting with all categories disabled\n", filePath)
 			return nil
 		}
 		return fmt.Errorf("failed to read category filters file: %w", err)
 	}
 	
-	var disabled map[string]map[string]bool
-	if err := json.Unmarshal(data, &disabled); err != nil {
+	var enabled map[string]map[string]bool
+	if err := json.Unmarshal(data, &enabled); err != nil {
 		return fmt.Errorf("failed to parse category filters file: %w", err)
 	}
 	
-	cf.disabledCats = disabled
-	if len(disabled) > 0 {
+	cf.enabledCats = enabled
+	if len(enabled) > 0 {
 		total := 0
-		for _, typeMap := range disabled {
+		for _, typeMap := range enabled {
 			total += len(typeMap)
 		}
-		log.Printf("[iptv-proxy] Loaded %d disabled categories from %s\n", total, filePath)
+		log.Printf("[iptv-proxy] Loaded %d enabled categories from %s\n", total, filePath)
 	}
 	return nil
 }
 
-// saveToFile saves disabled categories to a JSON file
+// saveToFile saves enabled categories to a JSON file
 func (cf *categoryFilter) saveToFile(filePath string) error {
 	if filePath == "" {
 		return nil // No file path configured, skip saving
 	}
 	
 	cf.mu.RLock()
-	disabled := cf.getDisabledCategories()
+	enabled := cf.getEnabledCategories()
 	cf.mu.RUnlock()
 	
-	data, err := json.MarshalIndent(disabled, "", "  ")
+	data, err := json.MarshalIndent(enabled, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal category filters: %w", err)
 	}
@@ -156,10 +156,10 @@ func (cf *categoryFilter) saveToFile(filePath string) error {
 	}
 	
 	total := 0
-	for _, typeMap := range disabled {
+	for _, typeMap := range enabled {
 		total += len(typeMap)
 	}
-	log.Printf("[iptv-proxy] Saved %d disabled categories to %s\n", total, filePath)
+	log.Printf("[iptv-proxy] Saved %d enabled categories to %s\n", total, filePath)
 	return nil
 }
 

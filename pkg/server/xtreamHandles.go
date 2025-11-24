@@ -252,8 +252,8 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Pla
 			categoryNameStr = categoryName.String()
 		}
 		
-		// Skip disabled categories
-		if globalCategoryFilter.isCategoryDisabled("live", categoryIDStr) {
+		// Only include enabled categories (skip if not enabled)
+		if !globalCategoryFilter.isCategoryEnabled("live", categoryIDStr) {
 			log.Printf("[iptv-proxy] DEBUG: Skipping disabled live category: %s (ID: %s)\n", categoryNameStr, categoryIDStr)
 			continue
 		}
@@ -410,8 +410,8 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Pla
 			categoryNameStr = categoryName.String()
 		}
 		
-		// Skip disabled categories
-		if globalCategoryFilter.isCategoryDisabled("movies", categoryIDStr) {
+		// Only include enabled categories (skip if not enabled)
+		if !globalCategoryFilter.isCategoryEnabled("movies", categoryIDStr) {
 			log.Printf("[iptv-proxy] DEBUG: Skipping disabled movies category: %s (ID: %s)\n", categoryNameStr, categoryIDStr)
 			continue
 		}
@@ -567,8 +567,8 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Pla
 			categoryNameStr = categoryName.String()
 		}
 		
-		// Skip disabled categories
-		if globalCategoryFilter.isCategoryDisabled("series", categoryIDStr) {
+		// Only include enabled categories (skip if not enabled)
+		if !globalCategoryFilter.isCategoryEnabled("series", categoryIDStr) {
 			log.Printf("[iptv-proxy] DEBUG: Skipping disabled series category: %s (ID: %s)\n", categoryNameStr, categoryIDStr)
 			continue
 		}

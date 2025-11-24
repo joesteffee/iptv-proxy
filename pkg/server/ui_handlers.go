@@ -31,10 +31,10 @@ import (
 
 // CategoryInfo represents a category with its enabled/disabled status
 type CategoryInfo struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Disabled bool   `json:"disabled"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Enabled bool   `json:"enabled"`
 }
 
 // CategoriesResponse represents the response for getting categories
@@ -44,9 +44,9 @@ type CategoriesResponse struct {
 	Series []CategoryInfo `json:"series"`
 }
 
-// UpdateCategoriesRequest represents the request to update disabled categories
+// UpdateCategoriesRequest represents the request to update enabled categories
 type UpdateCategoriesRequest struct {
-	Disabled map[string]map[string]bool `json:"disabled"` // type -> categoryID -> disabled
+	Enabled map[string]map[string]bool `json:"enabled"` // type -> categoryID -> enabled
 }
 
 // getCategoriesHandler fetches all categories from xtream and returns them with disabled status
@@ -65,7 +65,7 @@ func (c *Config) getCategoriesHandler(ctx *gin.Context) {
 		return
 	}
 
-	disabledCats := globalCategoryFilter.getDisabledCategories()
+	enabledCats := globalCategoryFilter.getEnabledCategories()
 	response := CategoriesResponse{
 		Live:   []CategoryInfo{},
 		Movies: []CategoryInfo{},
@@ -93,16 +93,16 @@ func (c *Config) getCategoriesHandler(ctx *gin.Context) {
 					catNameStr = catName.String()
 				}
 				
-				disabled := false
-				if typeMap, ok := disabledCats["live"]; ok {
-					disabled = typeMap[catIDStr]
+				enabled := false
+				if typeMap, ok := enabledCats["live"]; ok {
+					enabled = typeMap[catIDStr]
 				}
 				
 				response.Live = append(response.Live, CategoryInfo{
-					ID:       catIDStr,
-					Name:     catNameStr,
-					Type:     "live",
-					Disabled: disabled,
+					ID:      catIDStr,
+					Name:    catNameStr,
+					Type:    "live",
+					Enabled: enabled,
 				})
 			}
 		}
@@ -129,16 +129,16 @@ func (c *Config) getCategoriesHandler(ctx *gin.Context) {
 					catNameStr = catName.String()
 				}
 				
-				disabled := false
-				if typeMap, ok := disabledCats["movies"]; ok {
-					disabled = typeMap[catIDStr]
+				enabled := false
+				if typeMap, ok := enabledCats["movies"]; ok {
+					enabled = typeMap[catIDStr]
 				}
 				
 				response.Movies = append(response.Movies, CategoryInfo{
-					ID:       catIDStr,
-					Name:     catNameStr,
-					Type:     "movies",
-					Disabled: disabled,
+					ID:      catIDStr,
+					Name:    catNameStr,
+					Type:    "movies",
+					Enabled: enabled,
 				})
 			}
 		}
@@ -165,16 +165,16 @@ func (c *Config) getCategoriesHandler(ctx *gin.Context) {
 					catNameStr = catName.String()
 				}
 				
-				disabled := false
-				if typeMap, ok := disabledCats["series"]; ok {
-					disabled = typeMap[catIDStr]
+				enabled := false
+				if typeMap, ok := enabledCats["series"]; ok {
+					enabled = typeMap[catIDStr]
 				}
 				
 				response.Series = append(response.Series, CategoryInfo{
-					ID:       catIDStr,
-					Name:     catNameStr,
-					Type:     "series",
-					Disabled: disabled,
+					ID:      catIDStr,
+					Name:    catNameStr,
+					Type:    "series",
+					Enabled: enabled,
 				})
 			}
 		}
@@ -191,7 +191,7 @@ func (c *Config) updateCategoriesHandler(ctx *gin.Context) {
 		return
 	}
 
-	globalCategoryFilter.setDisabledCategories(req.Disabled)
+	globalCategoryFilter.setEnabledCategories(req.Enabled)
 	
 	// Save to file if path is configured
 	if c.CategoryFiltersPath != "" {
@@ -378,7 +378,7 @@ func (c *Config) serveWebUI(ctx *gin.Context) {
     <div class="container">
         <div class="header">
             <h1>📺 IPTV Proxy</h1>
-            <p>Manage Categories - Check boxes to disable unwanted categories</p>
+            <p>Manage Categories - Check boxes to enable desired categories</p>
         </div>
         <div class="content">
             <div class="error" id="error" style="display: none;"></div>
@@ -461,8 +461,8 @@ func (c *Config) serveWebUI(ctx *gin.Context) {
             function renderCategoryList(container, categories) {
                 categories.forEach(cat => {
                     const div = document.createElement('div');
-                    div.className = 'category-item' + (cat.disabled ? ' disabled' : '');
-                    const checked = cat.disabled ? 'checked' : '';
+                    div.className = 'category-item' + (!cat.enabled ? ' disabled' : '');
+                    const checked = cat.enabled ? 'checked' : '';
                     const catId = escapeHtml(cat.id);
                     const catType = escapeHtml(cat.type);
                     const catName = escapeHtml(cat.name);
@@ -486,12 +486,12 @@ func (c *Config) serveWebUI(ctx *gin.Context) {
             return div.innerHTML;
         }
         
-        function toggleCategory(type, id, disabled) {
+        function toggleCategory(type, id, enabled) {
             const category = categoriesData[type].find(c => c.id === id);
             if (category) {
-                category.disabled = disabled;
+                category.enabled = enabled;
                 const item = document.getElementById('cat-' + type + '-' + id).closest('.category-item');
-                if (disabled) {
+                if (!enabled) {
                     item.classList.add('disabled');
                 } else {
                     item.classList.remove('disabled');
@@ -524,25 +524,25 @@ func (c *Config) serveWebUI(ctx *gin.Context) {
         }
         
         async function saveCategories() {
-            const disabled = {
+            const enabled = {
                 live: {},
                 movies: {},
                 series: {}
             };
             
             categoriesData.live.forEach(cat => {
-                if (cat.disabled) {
-                    disabled.live[cat.id] = true;
+                if (cat.enabled) {
+                    enabled.live[cat.id] = true;
                 }
             });
             categoriesData.movies.forEach(cat => {
-                if (cat.disabled) {
-                    disabled.movies[cat.id] = true;
+                if (cat.enabled) {
+                    enabled.movies[cat.id] = true;
                 }
             });
             categoriesData.series.forEach(cat => {
-                if (cat.disabled) {
-                    disabled.series[cat.id] = true;
+                if (cat.enabled) {
+                    enabled.series[cat.id] = true;
                 }
             });
             
@@ -552,7 +552,7 @@ func (c *Config) serveWebUI(ctx *gin.Context) {
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ disabled: disabled })
+                    body: JSON.stringify({ enabled: enabled })
                 });
                 
                 if (!response.ok) {
