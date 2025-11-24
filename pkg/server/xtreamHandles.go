@@ -670,6 +670,12 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 				continue
 			}
 			
+			// Skip if series has no episodes
+			if seriesInfo.Episodes == nil || len(seriesInfo.Episodes) == 0 {
+				log.Printf("[iptv-proxy] DEBUG: Series %s (ID: %s) has no episodes, skipping\n", serieNameStr, serieIDStr)
+				continue
+			}
+			
 			// Generate M3U entries for each episode
 			for seasonKey, episodes := range seriesInfo.Episodes {
 				for _, episode := range episodes {
@@ -687,10 +693,17 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 					}
 					
 					var episodeName string
-					// Check if episode title already contains season/episode format (S##E##)
-					// If it does, it likely already includes series name, so use it as-is
-					if episodeTitle != "" && strings.Contains(episodeTitle, seasonEpisode) {
+					// Check if episode title already contains both series name and season/episode format
+					// If it does, use it as-is to avoid duplication
+					hasSeasonEpisode := strings.Contains(episodeTitle, seasonEpisode)
+					hasSeriesName := serieNameStr != "" && strings.Contains(episodeTitle, serieNameStr)
+					
+					if episodeTitle != "" && hasSeasonEpisode && hasSeriesName {
+						// Episode title already has series name and season/episode, use as-is
 						episodeName = episodeTitle
+					} else if episodeTitle != "" && hasSeasonEpisode {
+						// Episode title has season/episode but not series name, add series name
+						episodeName = fmt.Sprintf("%s - %s", serieNameStr, episodeTitle)
 					} else if episodeTitle != "" {
 						// Episode title is just the episode name, build full name
 						episodeName = fmt.Sprintf("%s - %s - %s", serieNameStr, seasonEpisode, episodeTitle)

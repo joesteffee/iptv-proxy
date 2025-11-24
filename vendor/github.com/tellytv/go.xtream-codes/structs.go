@@ -537,6 +537,14 @@ func (si *SeriesInfo) UnmarshalJSON(data []byte) error {
 
 // UnmarshalJSON implements custom unmarshaling for Series
 func (s *Series) UnmarshalJSON(data []byte) error {
+	// Handle empty array response (API sometimes returns [] for invalid/missing series)
+	if len(data) == 2 && string(data) == "[]" {
+		s.Episodes = make(map[string][]SeriesEpisode)
+		s.Info = SeriesInfo{}
+		s.Seasons = []interface{}{}
+		return nil
+	}
+
 	type Alias Series
 	aux := &struct {
 		*Alias
@@ -548,7 +556,20 @@ func (s *Series) UnmarshalJSON(data []byte) error {
 	// First try to unmarshal everything except episodes
 	initialErr := json.Unmarshal(data, &aux)
 	if initialErr != nil {
+		// If unmarshaling fails, check if it's an empty array
+		if string(data) == "[]" {
+			s.Episodes = make(map[string][]SeriesEpisode)
+			s.Info = SeriesInfo{}
+			s.Seasons = []interface{}{}
+			return nil
+		}
 		log.Printf("Warning: Failed to unmarshal Series base fields: %v", initialErr)
+	}
+
+	// Check if EpisodesRaw is empty or null
+	if len(aux.EpisodesRaw) == 0 || string(aux.EpisodesRaw) == "null" || string(aux.EpisodesRaw) == "[]" {
+		s.Episodes = make(map[string][]SeriesEpisode)
+		return nil
 	}
 
 	// Try to unmarshal episodes as map (expected format)
