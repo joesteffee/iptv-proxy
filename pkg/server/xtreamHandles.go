@@ -680,15 +680,22 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 					// Format season/episode as S01E01
 					seasonEpisode := fmt.Sprintf("S%02dE%02d", seasonNum, episodeNum)
 					
-					// Build episode name: "Series Name - S01E01 - Episode Title"
+					// Get episode title
 					episodeTitle := episode.Title
 					if episodeTitle == "" && episode.Info != nil {
 						episodeTitle = episode.Info.Name
 					}
-					episodeName := serieNameStr
-					if episodeTitle != "" {
+					
+					var episodeName string
+					// Check if episode title already contains season/episode format (S##E##)
+					// If it does, it likely already includes series name, so use it as-is
+					if episodeTitle != "" && strings.Contains(episodeTitle, seasonEpisode) {
+						episodeName = episodeTitle
+					} else if episodeTitle != "" {
+						// Episode title is just the episode name, build full name
 						episodeName = fmt.Sprintf("%s - %s - %s", serieNameStr, seasonEpisode, episodeTitle)
 					} else {
+						// No episode title, just use series name and season/episode
 						episodeName = fmt.Sprintf("%s - %s", serieNameStr, seasonEpisode)
 					}
 					
