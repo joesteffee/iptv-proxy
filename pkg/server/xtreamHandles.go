@@ -144,12 +144,11 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, extension string) (*m3u.Pla
 	
 	log.Printf("[iptv-proxy] DEBUG: Creating Xtream client with user: %s, baseURL: %s\n", c.XtreamUser.String(), c.XtreamBaseURL)
 	
-	// Use a proper User-Agent - Cloudflare may block requests with default Go user agent
-	userAgent := ctx.Request.UserAgent()
-	if userAgent == "" {
-		userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-	}
-	log.Printf("[iptv-proxy] DEBUG: Using User-Agent: %s\n", userAgent)
+	// Always use a proper browser-like User-Agent for Xtream API calls
+	// Cloudflare blocks suspicious User-Agents like "python-requests" or "go.xstream-codes"
+	// We ignore the incoming User-Agent to ensure we always use a browser-like one
+	userAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	log.Printf("[iptv-proxy] DEBUG: Using User-Agent for Xtream API: %s (ignoring client User-Agent: %s)\n", userAgent, ctx.Request.UserAgent())
 	
 	// Retry logic for Cloudflare 520 errors (often transient)
 	maxRetries := 3
@@ -701,12 +700,12 @@ func (c *Config) xtreamGet(ctx *gin.Context) {
 			return
 		}
 		
-		// Set User-Agent to match what streaming apps typically use
-		userAgent := ctx.Request.UserAgent()
-		if userAgent == "" {
-			userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
-		}
+		// Always use a proper browser-like User-Agent for Xtream API calls
+		// Cloudflare blocks suspicious User-Agents like "python-requests" or default Go user agents
+		// We ignore the incoming User-Agent to ensure we always use a browser-like one
+		userAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 		req.Header.Set("User-Agent", userAgent)
+		log.Printf("[iptv-proxy] DEBUG: Using User-Agent for Xtream get.php request: %s (ignoring client User-Agent: %s)\n", userAgent, ctx.Request.UserAgent())
 		
 		resp, err := sharedHTTPClient.Do(req)
 		if err != nil {
