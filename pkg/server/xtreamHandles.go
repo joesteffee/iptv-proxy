@@ -668,10 +668,26 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 				serieContainerExtStr = serieContainerExt.String()
 			}
 			
-			// Use container_extension from API if available, otherwise fall back to output parameter
+			// For series, ContainerExtension is not in SeriesInfo struct from GetSeries()
+			// It's only available in SeriesEpisode from GetSeriesInfo()
+			// Since fetching series info for every series would be too slow,
+			// we'll try to get it from the first episode if ContainerExtension is missing
 			seriesExtension := extension
 			if serieContainerExtStr != "" {
 				seriesExtension = "." + serieContainerExtStr
+			} else {
+				// Try to get container extension from first episode
+				// Only do this if we don't have it from the list response
+				seriesInfo, seriesErr := client.GetSeriesInfo(serieIDStr)
+				if seriesErr == nil && seriesInfo != nil && len(seriesInfo.Episodes) > 0 {
+					// Get first episode from first available season
+					for _, episodes := range seriesInfo.Episodes {
+						if len(episodes) > 0 && episodes[0].ContainerExtension != "" {
+							seriesExtension = "." + episodes[0].ContainerExtension
+							break
+						}
+					}
+				}
 			}
 			
 			track := m3u.Track{Name: serieNameStr, Length: -1, URI: "", Tags: nil}
