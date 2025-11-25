@@ -236,6 +236,22 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 	}
 	defer resp.Body.Close()
 
+	// Handle redirects (301, 302, 303, 307, 308)
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		location, err := resp.Location()
+		if err != nil || location == nil {
+			// Invalid redirect - missing Location header
+			log.Printf("[iptv-proxy] ERROR: %d response missing Location header for URL: %s\n", resp.StatusCode, urlStr)
+			ctx.AbortWithStatusJSON(http.StatusBadGateway, gin.H{
+				"error": fmt.Sprintf("Invalid redirect response: %d response missing Location header", resp.StatusCode),
+			})
+			return
+		}
+		// Valid redirect - return it to the client
+		ctx.Redirect(resp.StatusCode, location.String())
+		return
+	}
+
 	mergeHttpHeader(ctx.Writer.Header(), resp.Header)
 	ctx.Status(resp.StatusCode)
 	// Use 128KB buffer (4x the default 32KB) to reduce number of requests
