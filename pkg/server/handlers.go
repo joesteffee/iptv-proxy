@@ -237,6 +237,7 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 	defer resp.Body.Close()
 
 	// Handle redirects (301, 302, 303, 307, 308)
+	// For streaming, we follow redirects ourselves rather than redirecting the client
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		location, err := resp.Location()
 		if err != nil || location == nil {
@@ -247,9 +248,14 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 			})
 			return
 		}
-		// Valid redirect - return it to the client
-		ctx.Redirect(resp.StatusCode, location.String())
-		return
+		// Valid redirect - follow it and stream from the redirected URL
+		resp.Body.Close()
+		urlStr = location.String()
+		log.Printf("[iptv-proxy] DEBUG: Following redirect from %s to %s\n", oriURL.String(), urlStr)
+		// Retry the request with the new URL (will go through rate limit checks again)
+		attempt = 0 // Reset attempt counter for redirect
+		first458Time = nil // Reset 458 tracking for redirect
+		continue
 	}
 
 	mergeHttpHeader(ctx.Writer.Header(), resp.Header)
