@@ -324,12 +324,8 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 	catLen := catValueRef.Len()
 	log.Printf("[iptv-proxy] DEBUG: Retrieved %d live categories\n", catLen)
 
-	// this is specific to xtream API,
-	// prefix with "live" if there is an extension.
-	var prefix string
-	if extension != "" {
-		prefix = "live/"
-	}
+	// For Xtream API, we generate URLs in the format: {baseURL}/{username}/{password}/{stream_id}
+	// The replaceURL function will convert these to proxy URLs with /live/ prefix and .ts extension
 
 	var playlist = new(m3u.Playlist)
 	playlist.Tracks = make([]m3u.Track, 0)
@@ -425,13 +421,6 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 			streamIDStr := getFieldValue(streamElem, "ID")
 			streamEPGStr := getFieldValue(streamElem, "EPGChannelID")
 			streamIconStr := getFieldValue(streamElem, "Icon")
-			streamContainerExtStr := getFieldValue(streamElem, "ContainerExtension")
-			
-			// Use container_extension from API if available, otherwise fall back to output parameter
-			liveExtension := extension
-			if streamContainerExtStr != "" {
-				liveExtension = "." + streamContainerExtStr
-			}
 			
 			track := m3u.Track{Name: streamNameStr, Length: -1, URI: "", Tags: nil}
 
@@ -449,7 +438,9 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 				track.Tags = append(track.Tags, m3u.Tag{Name: "group-title", Value: categoryNameStr})
 			}
 
-			track.URI = fmt.Sprintf("%s/%s%s/%s/%s%s", c.XtreamBaseURL, prefix, c.XtreamUser, c.XtreamPassword, streamIDStr, liveExtension)
+			// Generate URL in Xtream format: {baseURL}/{username}/{password}/{stream_id}
+			// The replaceURL function will convert this to proxy format: /live/{proxy_user}/{proxy_pass}/{stream_id}.ts
+			track.URI = fmt.Sprintf("%s/%s/%s/%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, streamIDStr)
 			playlist.Tracks = append(playlist.Tracks, track)
 			totalTracks++
 		}

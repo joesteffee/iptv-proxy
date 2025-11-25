@@ -344,8 +344,27 @@ func (c *Config) replaceURL(uri string, trackIndex int, xtream bool) (string, er
 
 	uriPath := oriURL.EscapedPath()
 	if xtream {
-		uriPath = strings.ReplaceAll(uriPath, c.XtreamUser.PathEscape(), c.User.PathEscape())
-		uriPath = strings.ReplaceAll(uriPath, c.XtreamPassword.PathEscape(), c.Password.PathEscape())
+		// For Xtream URLs, replace the Xtream credentials with proxy credentials
+		// Live streams come as: /{xtream_user}/{xtream_pass}/{stream_id}
+		// Movies come as: /movie/{xtream_user}/{xtream_pass}/{stream_id}
+		// Series come as: /series/{xtream_user}/{xtream_pass}/{stream_id}
+		
+		// Check if this is a live stream (format: /{user}/{pass}/{id})
+		// by checking if the path starts with /{xtream_user}/{xtream_pass}/
+		xtreamUserEscaped := c.XtreamUser.PathEscape()
+		xtreamPassEscaped := c.XtreamPassword.PathEscape()
+		expectedLivePrefix := "/" + xtreamUserEscaped + "/" + xtreamPassEscaped + "/"
+		
+		if strings.HasPrefix(uriPath, expectedLivePrefix) {
+			// This is a live stream - extract the stream ID and convert to proxy format
+			streamID := strings.TrimPrefix(uriPath, expectedLivePrefix)
+			// Convert to proxy format: /live/{proxy_user}/{proxy_pass}/{stream_id}.ts
+			uriPath = fmt.Sprintf("/live/%s/%s/%s.ts", c.User.PathEscape(), c.Password.PathEscape(), streamID)
+		} else {
+			// For movies and series, just replace credentials (they already have /movie/ or /series/ prefix)
+			uriPath = strings.ReplaceAll(uriPath, xtreamUserEscaped, c.User.PathEscape())
+			uriPath = strings.ReplaceAll(uriPath, xtreamPassEscaped, c.Password.PathEscape())
+		}
 	} else {
 		uriPath = path.Join("/", c.endpointAntiColision, c.User.PathEscape(), c.Password.PathEscape(), fmt.Sprintf("%d", trackIndex), path.Base(uriPath))
 	}
