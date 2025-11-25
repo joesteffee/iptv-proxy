@@ -79,7 +79,8 @@ func getFieldValue(v reflect.Value, fieldName string) string {
 	if v.Kind() == reflect.Map {
 		// Map of Go struct field names to JSON field names
 		jsonFieldMap := map[string][]string{
-			"ID":            {"category_id", "id", "ID", "vod_id", "series_id", "stream_id", "epg_channel_id"},
+			"ID":            {"stream_id", "id", "ID", "vod_id", "series_id", "category_id", "epg_channel_id"},
+			"stream_id":     {"stream_id", "streamId", "StreamID", "ID"},
 			"Name":          {"category_name", "name", "Name", "title", "Title"},
 			"EPGChannelID":  {"epg_channel_id", "epgchannelid", "EPGChannelID"},
 			"Icon":          {"stream_icon", "icon", "Icon", "cover", "Cover"},
@@ -418,7 +419,12 @@ func (c *Config) xtreamGenerateM3u(ctx *gin.Context, output string) (*m3u.Playli
 		for j := 0; j < liveLen; j++ {
 			streamElem := liveValue.Index(j)
 			streamNameStr := getFieldValue(streamElem, "Name")
-			streamIDStr := getFieldValue(streamElem, "ID")
+			// For live streams, use "stream_id" field directly to avoid confusion with "category_id"
+			// Try "stream_id" first, then fall back to "ID"
+			streamIDStr := getFieldValue(streamElem, "stream_id")
+			if streamIDStr == "" {
+				streamIDStr = getFieldValue(streamElem, "ID")
+			}
 			streamEPGStr := getFieldValue(streamElem, "EPGChannelID")
 			streamIconStr := getFieldValue(streamElem, "Icon")
 			
