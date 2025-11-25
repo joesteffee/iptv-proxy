@@ -110,7 +110,23 @@ func getFieldValue(v reflect.Value, fieldName string) string {
 			key := reflect.ValueOf(jsonName)
 			fieldVal := v.MapIndex(key)
 			if fieldVal.IsValid() && !fieldVal.IsZero() {
-				val := fmt.Sprint(fieldVal.Interface())
+				// Handle numeric values to avoid scientific notation
+				var val string
+				if fieldVal.Kind() == reflect.Float64 {
+					// JSON numbers are typically float64, convert to int if it's a whole number
+					floatVal := fieldVal.Float()
+					if floatVal == float64(int64(floatVal)) {
+						val = fmt.Sprintf("%.0f", floatVal)
+					} else {
+						val = fmt.Sprint(fieldVal.Interface())
+					}
+				} else if fieldVal.Kind() >= reflect.Int && fieldVal.Kind() <= reflect.Int64 {
+					val = fmt.Sprintf("%d", fieldVal.Int())
+				} else if fieldVal.Kind() >= reflect.Uint && fieldVal.Kind() <= reflect.Uint64 {
+					val = fmt.Sprintf("%d", fieldVal.Uint())
+				} else {
+					val = fmt.Sprint(fieldVal.Interface())
+				}
 				if val != "" && val != "<nil>" {
 					return val
 				}
