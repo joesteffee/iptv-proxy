@@ -20,12 +20,12 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	jsoniter "github.com/json-iterator/go"
 )
 
 // RedisCache represents a Redis-based cache
@@ -97,6 +97,7 @@ func (r *RedisCache) Set(key string, data []byte, ttl time.Duration) error {
 }
 
 // GetJSON retrieves and unmarshals JSON data from cache
+// Uses json-iterator which handles ,string struct tags more flexibly than standard library
 func (r *RedisCache) GetJSON(key string, dest interface{}) (bool, error) {
 	if r == nil {
 		return false, nil
@@ -110,6 +111,9 @@ func (r *RedisCache) GetJSON(key string, dest interface{}) (bool, error) {
 		return false, nil // Cache miss
 	}
 
+	// Use json-iterator which handles ,string tags more flexibly
+	// It can unmarshal unquoted numbers into fields with ,string tags
+	var json = jsoniter.ConfigCompatibleWithStandardLibrary
 	if err := json.Unmarshal(data, dest); err != nil {
 		log.Printf("[iptv-proxy] WARNING: Failed to unmarshal cached data for key %s: %v", key, err)
 		return false, err
@@ -119,11 +123,14 @@ func (r *RedisCache) GetJSON(key string, dest interface{}) (bool, error) {
 }
 
 // SetJSON marshals and stores JSON data in cache
+// Uses json-iterator for consistency with GetJSON
 func (r *RedisCache) SetJSON(key string, data interface{}, ttl time.Duration) error {
 	if r == nil {
 		return nil
 	}
 
+	// Use json-iterator for consistency with GetJSON
+	var json = jsoniter.ConfigCompatibleWithStandardLibrary
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return err
