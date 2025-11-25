@@ -164,6 +164,7 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 	const rateLimitStatusCode = 458
 	const retryInterval = 5 * time.Second // Retry every 5 seconds after 458 response
 	const rateLimitCooldown = 30 * time.Second // How long to mark URL as rate-limited
+	const maxRedirects = 10 // Maximum number of redirects to follow
 	retryTimeout := time.Duration(c.RateLimitRetryTimeout) * time.Minute // Keep retrying for configured minutes after first 458
 
 	urlStr := oriURL.String()
@@ -171,9 +172,19 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 	var resp *http.Response
 	var first458Time *time.Time
 	attempt := 0
+	redirectCount := 0
 
 	for {
 		attempt++
+		
+		// Prevent infinite redirect loops
+		if redirectCount >= maxRedirects {
+			log.Printf("[iptv-proxy] ERROR: Too many redirects (%d) for URL: %s\n", redirectCount, urlStr)
+			ctx.AbortWithStatusJSON(http.StatusBadGateway, gin.H{
+				"error": fmt.Sprintf("Too many redirects (%d), possible redirect loop", redirectCount),
+			})
+			return
+		}
 		
 		// Check if this URL is currently rate-limited and wait if necessary (transparent to client)
 		// This prevents duplicate requests but doesn't block the client connection
@@ -209,9 +220,11 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 			// Valid redirect - follow it and stream from the redirected URL
 			resp.Body.Close()
 			urlStr = location.String()
-			log.Printf("[iptv-proxy] DEBUG: Following redirect from %s to %s\n", oriURL.String(), urlStr)
+			redirectCount++
+			log.Printf("[iptv-proxy] DEBUG: Following redirect %d from %s to %s\n", redirectCount, oriURL.String(), urlStr)
 			// Retry the request with the new URL (will go through rate limit checks again)
 			first458Time = nil // Reset 458 tracking for redirect
+			attempt = 0 // Reset attempt counter for redirect
 			continue
 		}
 
@@ -257,6 +270,12 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 		break
 	}
 	defer resp.Body.Close()
+
+	// Log error status codes for debugging (but still proxy them to client)
+	if resp.StatusCode >= 400 {
+		log.Printf("[iptv-proxy] WARNING: Received error status %d from Xtream server for URL: %s\n", 
+			resp.StatusCode, urlStr)
+	}
 
 	mergeHttpHeader(ctx.Writer.Header(), resp.Header)
 	ctx.Status(resp.StatusCode)
