@@ -193,6 +193,28 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 			return
 		}
 
+		// Handle redirects (301, 302, 303, 307, 308)
+		// For streaming, we follow redirects ourselves rather than redirecting the client
+		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			location, err := resp.Location()
+			if err != nil || location == nil {
+				// Invalid redirect - missing Location header
+				resp.Body.Close()
+				log.Printf("[iptv-proxy] ERROR: %d response missing Location header for URL: %s\n", resp.StatusCode, urlStr)
+				ctx.AbortWithStatusJSON(http.StatusBadGateway, gin.H{
+					"error": fmt.Sprintf("Invalid redirect response: %d response missing Location header", resp.StatusCode),
+				})
+				return
+			}
+			// Valid redirect - follow it and stream from the redirected URL
+			resp.Body.Close()
+			urlStr = location.String()
+			log.Printf("[iptv-proxy] DEBUG: Following redirect from %s to %s\n", oriURL.String(), urlStr)
+			// Retry the request with the new URL (will go through rate limit checks again)
+			first458Time = nil // Reset 458 tracking for redirect
+			continue
+		}
+
 		// Check for rate limiting (458) response
 		if resp.StatusCode == rateLimitStatusCode {
 			resp.Body.Close()
@@ -235,28 +257,6 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 		break
 	}
 	defer resp.Body.Close()
-
-	// Handle redirects (301, 302, 303, 307, 308)
-	// For streaming, we follow redirects ourselves rather than redirecting the client
-	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		location, err := resp.Location()
-		if err != nil || location == nil {
-			// Invalid redirect - missing Location header
-			log.Printf("[iptv-proxy] ERROR: %d response missing Location header for URL: %s\n", resp.StatusCode, urlStr)
-			ctx.AbortWithStatusJSON(http.StatusBadGateway, gin.H{
-				"error": fmt.Sprintf("Invalid redirect response: %d response missing Location header", resp.StatusCode),
-			})
-			return
-		}
-		// Valid redirect - follow it and stream from the redirected URL
-		resp.Body.Close()
-		urlStr = location.String()
-		log.Printf("[iptv-proxy] DEBUG: Following redirect from %s to %s\n", oriURL.String(), urlStr)
-		// Retry the request with the new URL (will go through rate limit checks again)
-		attempt = 0 // Reset attempt counter for redirect
-		first458Time = nil // Reset 458 tracking for redirect
-		continue
-	}
 
 	mergeHttpHeader(ctx.Writer.Header(), resp.Header)
 	ctx.Status(resp.StatusCode)
