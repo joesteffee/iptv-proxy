@@ -1334,11 +1334,9 @@ func (c *Config) xtreamStreamTimeshift(ctx *gin.Context) {
 
 func (c *Config) xtreamStreamMovie(ctx *gin.Context) {
 	id := ctx.Param("id")
-	// Remove file extension if present (Xtream API doesn't use extensions in the URL)
-	streamID := strings.TrimSuffix(id, ".ts")
-	streamID = strings.TrimSuffix(streamID, ".mkv")
-	streamID = strings.TrimSuffix(streamID, ".mp4")
-	rpURL, err := url.Parse(fmt.Sprintf("%s/movie/%s/%s/%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, streamID))
+	// Movies and series URLs from Xtream API include extensions (.mp4, .mkv, etc.)
+	// Keep the extension as the Xtream server expects it
+	rpURL, err := url.Parse(fmt.Sprintf("%s/movie/%s/%s/%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, id))
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
 		return
@@ -1349,11 +1347,9 @@ func (c *Config) xtreamStreamMovie(ctx *gin.Context) {
 
 func (c *Config) xtreamStreamSeries(ctx *gin.Context) {
 	id := ctx.Param("id")
-	// Remove file extension if present (Xtream API doesn't use extensions in the URL)
-	streamID := strings.TrimSuffix(id, ".ts")
-	streamID = strings.TrimSuffix(streamID, ".mkv")
-	streamID = strings.TrimSuffix(streamID, ".mp4")
-	rpURL, err := url.Parse(fmt.Sprintf("%s/series/%s/%s/%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, streamID))
+	// Movies and series URLs from Xtream API include extensions (.mp4, .mkv, etc.)
+	// Keep the extension as the Xtream server expects it
+	rpURL, err := url.Parse(fmt.Sprintf("%s/series/%s/%s/%s", c.XtreamBaseURL, c.XtreamUser, c.XtreamPassword, id))
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
 		return
