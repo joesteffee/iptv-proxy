@@ -358,8 +358,9 @@ func (c *Config) replaceURL(uri string, trackIndex int, xtream bool) (string, er
 		if strings.HasPrefix(uriPath, expectedLivePrefix) {
 			// This is a live stream - extract the stream ID and convert to proxy format
 			streamID := strings.TrimPrefix(uriPath, expectedLivePrefix)
-			// Convert to proxy format: /live/{proxy_user}/{proxy_pass}/{stream_id}.ts
-			uriPath = fmt.Sprintf("/live/%s/%s/%s.ts", c.User.PathEscape(), c.Password.PathEscape(), streamID)
+			// Convert to proxy format: /live/{proxy_user}/{proxy_pass}/{stream_id}
+			// Extension is not required - handler will work with or without it
+			uriPath = fmt.Sprintf("/live/%s/%s/%s", c.User.PathEscape(), c.Password.PathEscape(), streamID)
 		} else {
 			// For movies and series, just replace credentials (they already have /movie/ or /series/ prefix)
 			uriPath = strings.ReplaceAll(uriPath, xtreamUserEscaped, c.User.PathEscape())
