@@ -210,22 +210,22 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 			location, err := resp.Location()
 			if err != nil || location == nil {
 				// Invalid redirect - missing Location header
+				// Some servers return 302 without Location header (invalid HTTP but happens in practice)
+				// Log warning but continue processing the response as if it were a normal response
+				log.Printf("[iptv-proxy] WARNING: %d response missing Location header for URL: %s, treating as regular response\n", resp.StatusCode, urlStr)
+				// Don't return error - continue to process the response body
+				// This allows streaming to continue even with malformed redirects
+			} else {
+				// Valid redirect - follow it and stream from the redirected URL
 				resp.Body.Close()
-				log.Printf("[iptv-proxy] ERROR: %d response missing Location header for URL: %s\n", resp.StatusCode, urlStr)
-				ctx.AbortWithStatusJSON(http.StatusBadGateway, gin.H{
-					"error": fmt.Sprintf("Invalid redirect response: %d response missing Location header", resp.StatusCode),
-				})
-				return
+				urlStr = location.String()
+				redirectCount++
+				log.Printf("[iptv-proxy] DEBUG: Following redirect %d from %s to %s\n", redirectCount, oriURL.String(), urlStr)
+				// Retry the request with the new URL (will go through rate limit checks again)
+				first458Time = nil // Reset 458 tracking for redirect
+				attempt = 0 // Reset attempt counter for redirect
+				continue
 			}
-			// Valid redirect - follow it and stream from the redirected URL
-			resp.Body.Close()
-			urlStr = location.String()
-			redirectCount++
-			log.Printf("[iptv-proxy] DEBUG: Following redirect %d from %s to %s\n", redirectCount, oriURL.String(), urlStr)
-			// Retry the request with the new URL (will go through rate limit checks again)
-			first458Time = nil // Reset 458 tracking for redirect
-			attempt = 0 // Reset attempt counter for redirect
-			continue
 		}
 
 		// Check for rate limiting (458) response
