@@ -207,8 +207,35 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 		// Handle redirects (301, 302, 303, 307, 308)
 		// For streaming, we follow redirects ourselves rather than redirecting the client
 		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			// Try to get Location header - check both resp.Location() and direct header access
 			location, err := resp.Location()
+			locationHeader := resp.Header.Get("Location")
+			
 			if err != nil || location == nil {
+				// Fallback: try to get Location header directly
+				if locationHeader != "" {
+					// Parse the Location header manually
+					parsedLocation, parseErr := url.Parse(locationHeader)
+					if parseErr == nil && parsedLocation != nil {
+						// If relative URL, resolve it against the current request URL
+						if !parsedLocation.IsAbs() {
+							currentURL, _ := url.Parse(urlStr)
+							if currentURL != nil {
+								parsedLocation = currentURL.ResolveReference(parsedLocation)
+							}
+						}
+						location = parsedLocation
+						log.Printf("[iptv-proxy] DEBUG: Parsed Location header manually (resp.Location() failed): %s\n", location.String())
+					} else if parseErr != nil {
+						log.Printf("[iptv-proxy] WARNING: Failed to parse Location header '%s': %v\n", locationHeader, parseErr)
+					}
+				}
+			} else if locationHeader != "" {
+				// resp.Location() succeeded - log for debugging
+				log.Printf("[iptv-proxy] DEBUG: Got Location header via resp.Location(): %s (raw: %s)\n", location.String(), locationHeader)
+			}
+			
+			if location == nil {
 				// Invalid redirect - missing Location header
 				// Some servers return 302 without Location header (invalid HTTP but happens in practice)
 				// Log warning but continue processing the response as if it were a normal response
