@@ -110,35 +110,39 @@ func getFieldValue(v reflect.Value, fieldName string) string {
 			key := reflect.ValueOf(jsonName)
 			fieldVal := v.MapIndex(key)
 			if fieldVal.IsValid() && !fieldVal.IsZero() {
-			// Handle numeric values to avoid scientific notation
-			var val string
-			if fieldVal.Kind() == reflect.Float64 {
-				// JSON numbers are typically float64, convert to int if it's a whole number
-				floatVal := fieldVal.Float()
-				// Check if it's a whole number (within floating point precision)
-				intVal := int64(floatVal)
-				// Use a small epsilon to handle floating point precision issues
-				epsilon := 0.0001
-				diff := floatVal - float64(intVal)
-				if diff < epsilon && diff > -epsilon {
-					// Use integer formatting (%d) to avoid scientific notation for whole numbers
-					// This ensures numbers like 1481950 are formatted as "1481950" not "1.48195e+06"
-					val = fmt.Sprintf("%d", intVal)
-				} else {
-					// For non-whole numbers, use float formatting
-					// Use %f to avoid scientific notation
-					val = fmt.Sprintf("%f", floatVal)
-					// Remove trailing zeros
-					val = strings.TrimRight(val, "0")
-					val = strings.TrimRight(val, ".")
+				// Unwrap interface{} if needed (map[string]interface{} values are wrapped)
+				if fieldVal.Kind() == reflect.Interface {
+					fieldVal = fieldVal.Elem()
 				}
-			} else if fieldVal.Kind() >= reflect.Int && fieldVal.Kind() <= reflect.Int64 {
-				val = fmt.Sprintf("%d", fieldVal.Int())
-			} else if fieldVal.Kind() >= reflect.Uint && fieldVal.Kind() <= reflect.Uint64 {
-				val = fmt.Sprintf("%d", fieldVal.Uint())
-			} else {
-				val = fmt.Sprint(fieldVal.Interface())
-			}
+				// Handle numeric values to avoid scientific notation
+				var val string
+				if fieldVal.Kind() == reflect.Float64 {
+					// JSON numbers are typically float64, convert to int if it's a whole number
+					floatVal := fieldVal.Float()
+					// Check if it's a whole number (within floating point precision)
+					intVal := int64(floatVal)
+					// Use a small epsilon to handle floating point precision issues
+					epsilon := 0.0001
+					diff := floatVal - float64(intVal)
+					if diff < epsilon && diff > -epsilon {
+						// Use integer formatting (%d) to avoid scientific notation for whole numbers
+						// This ensures numbers like 1481950 are formatted as "1481950" not "1.48195e+06"
+						val = fmt.Sprintf("%d", intVal)
+					} else {
+						// For non-whole numbers, use float formatting
+						// Use %f to avoid scientific notation
+						val = fmt.Sprintf("%f", floatVal)
+						// Remove trailing zeros
+						val = strings.TrimRight(val, "0")
+						val = strings.TrimRight(val, ".")
+					}
+				} else if fieldVal.Kind() >= reflect.Int && fieldVal.Kind() <= reflect.Int64 {
+					val = fmt.Sprintf("%d", fieldVal.Int())
+				} else if fieldVal.Kind() >= reflect.Uint && fieldVal.Kind() <= reflect.Uint64 {
+					val = fmt.Sprintf("%d", fieldVal.Uint())
+				} else {
+					val = fmt.Sprint(fieldVal.Interface())
+				}
 				if val != "" && val != "<nil>" {
 					return val
 				}
