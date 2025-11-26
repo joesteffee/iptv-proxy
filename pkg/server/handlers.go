@@ -51,6 +51,11 @@ var sharedHTTPClient = &http.Client{
 		ForceAttemptHTTP2:     true,
 	},
 	Timeout: 0, // No overall timeout - streaming can take a long time
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		// Don't follow redirects automatically - we handle them manually in the stream() function
+		// This allows us to handle cases where Location header is empty or missing
+		return http.ErrUseLastResponse
+	},
 }
 
 // sharedHTTPClientHLS is similar but configured for HLS redirects
@@ -200,6 +205,21 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 
 		resp, err = client.Do(req)
 		if err != nil {
+			// Check if error is about missing Location header in redirect
+			// Go's HTTP client validates redirects and throws this error when Location header is empty
+			// This happens for some Xtream servers that return 302 with empty Location header
+			if strings.Contains(err.Error(), "302 response missing Location header") ||
+				strings.Contains(err.Error(), "missing Location header") {
+				// This is a redirect with empty/missing Location header
+				// Some Xtream servers return 302 with empty Location but valid stream data in body
+				// We can't get the response when this error occurs, so we need to inform the client
+				log.Printf("[iptv-proxy] WARNING: Server returned 302 with empty Location header for URL: %s\n", urlStr)
+				log.Printf("[iptv-proxy] INFO: This is a known issue with some Xtream servers - stream may not be available\n")
+				ctx.AbortWithStatusJSON(http.StatusBadGateway, gin.H{
+					"error": "Server returned redirect with empty Location header - stream may not be available",
+				})
+				return
+			}
 			ctx.AbortWithError(http.StatusInternalServerError, err) // nolint: errcheck
 			return
 		}
@@ -211,35 +231,38 @@ func (c *Config) stream(ctx *gin.Context, oriURL *url.URL) {
 			location, err := resp.Location()
 			locationHeader := resp.Header.Get("Location")
 			
-			if err != nil || location == nil {
-				// Fallback: try to get Location header directly
-				if locationHeader != "" {
-					// Parse the Location header manually
-					parsedLocation, parseErr := url.Parse(locationHeader)
-					if parseErr == nil && parsedLocation != nil {
-						// If relative URL, resolve it against the current request URL
-						if !parsedLocation.IsAbs() {
-							currentURL, _ := url.Parse(urlStr)
-							if currentURL != nil {
-								parsedLocation = currentURL.ResolveReference(parsedLocation)
-							}
+			// Check if Location header is empty (some servers return empty Location header)
+			if locationHeader == "" {
+				// Empty Location header - treat as missing
+				log.Printf("[iptv-proxy] WARNING: %d response has empty Location header for URL: %s, treating as regular response\n", resp.StatusCode, urlStr)
+				// Continue processing the response body - some servers return valid stream data even with empty Location
+			} else if err != nil || location == nil {
+				// Fallback: try to get Location header directly and parse manually
+				// Parse the Location header manually
+				parsedLocation, parseErr := url.Parse(locationHeader)
+				if parseErr == nil && parsedLocation != nil {
+					// If relative URL, resolve it against the current request URL
+					if !parsedLocation.IsAbs() {
+						currentURL, _ := url.Parse(urlStr)
+						if currentURL != nil {
+							parsedLocation = currentURL.ResolveReference(parsedLocation)
 						}
-						location = parsedLocation
-						log.Printf("[iptv-proxy] DEBUG: Parsed Location header manually (resp.Location() failed): %s\n", location.String())
-					} else if parseErr != nil {
-						log.Printf("[iptv-proxy] WARNING: Failed to parse Location header '%s': %v\n", locationHeader, parseErr)
 					}
+					location = parsedLocation
+					log.Printf("[iptv-proxy] DEBUG: Parsed Location header manually (resp.Location() failed): %s\n", location.String())
+				} else if parseErr != nil {
+					log.Printf("[iptv-proxy] WARNING: Failed to parse Location header '%s': %v\n", locationHeader, parseErr)
 				}
-			} else if locationHeader != "" {
+			} else {
 				// resp.Location() succeeded - log for debugging
 				log.Printf("[iptv-proxy] DEBUG: Got Location header via resp.Location(): %s (raw: %s)\n", location.String(), locationHeader)
 			}
 			
 			if location == nil {
-				// Invalid redirect - missing Location header
-				// Some servers return 302 without Location header (invalid HTTP but happens in practice)
+				// Invalid redirect - missing or empty Location header
+				// Some servers return 302 without Location header or with empty Location (invalid HTTP but happens in practice)
 				// Log warning but continue processing the response as if it were a normal response
-				log.Printf("[iptv-proxy] WARNING: %d response missing Location header for URL: %s, treating as regular response\n", resp.StatusCode, urlStr)
+				log.Printf("[iptv-proxy] WARNING: %d response missing/empty Location header for URL: %s, treating as regular response\n", resp.StatusCode, urlStr)
 				// Don't return error - continue to process the response body
 				// This allows streaming to continue even with malformed redirects
 			} else {
