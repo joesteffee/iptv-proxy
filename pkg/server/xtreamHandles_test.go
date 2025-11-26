@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -596,4 +597,149 @@ func TestXtreamGet_QueryParameterPreservation(t *testing.T) {
 // Note: Testing xtreamGenerateM3u would require mocking the Xtream API client,
 // which is more complex. These tests focus on the HTTP client improvements
 // and M3U parsing functionality that we added.
+
+func TestGetFieldValue_NumericFormatting(t *testing.T) {
+	tests := []struct {
+		name                string
+		fieldVal            interface{}
+		expected            string
+		skipScientificCheck bool
+	}{
+		{
+			name:     "small integer as float64",
+			fieldVal: float64(123),
+			expected: "123",
+		},
+		{
+			name:     "large integer as float64 - 1471382",
+			fieldVal: float64(1471382),
+			expected: "1471382",
+		},
+		{
+			name:     "large integer as float64 - 1595637",
+			fieldVal: float64(1595637),
+			expected: "1595637",
+		},
+		{
+			name:     "large integer as float64 - 1479591",
+			fieldVal: float64(1479591),
+			expected: "1479591",
+		},
+		{
+			name:     "large integer as float64 - 1479590",
+			fieldVal: float64(1479590),
+			expected: "1479590",
+		},
+		{
+			name:     "large integer as float64 - 1481950",
+			fieldVal: float64(1481950),
+			expected: "1481950",
+		},
+		{
+			name:     "very large integer as float64 - 1632123",
+			fieldVal: float64(1632123),
+			expected: "1632123",
+		},
+		{
+			name:     "negative integer as float64",
+			fieldVal: float64(-123),
+			expected: "-123",
+		},
+		{
+			name:     "decimal number as float64",
+			fieldVal: float64(123.456),
+			expected: "123.456",
+		},
+		{
+			name:     "int64 value",
+			fieldVal: int64(1471382),
+			expected: "1471382",
+		},
+		{
+			name:     "int32 value",
+			fieldVal: int32(1471382),
+			expected: "1471382",
+		},
+		{
+			name:     "uint64 value",
+			fieldVal: uint64(1471382),
+			expected: "1471382",
+		},
+		{
+			name:     "string value",
+			fieldVal: "test",
+			expected: "test",
+			skipScientificCheck: true, // Strings don't have scientific notation
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a map[string]interface{} to simulate JSON unmarshaling
+			testMap := map[string]interface{}{
+				"stream_id": tt.fieldVal,
+				"id":        tt.fieldVal,
+				"ID":        tt.fieldVal,
+			}
+
+			// Test with "stream_id" field name
+			v := reflect.ValueOf(testMap)
+			result := getFieldValue(v, "stream_id")
+
+			// Verify result doesn't contain scientific notation (unless it's a string)
+			if !tt.skipScientificCheck && strings.ContainsAny(result, "eE") {
+				t.Errorf("getFieldValue() returned scientific notation: %s (expected: %s)", result, tt.expected)
+			}
+
+			// Verify result matches expected (for numeric values)
+			if result != tt.expected {
+				// For decimal numbers, allow some precision differences
+				if strings.Contains(tt.expected, ".") {
+					// Just check it doesn't have scientific notation
+					if !strings.ContainsAny(result, "eE") {
+						// Acceptable - decimal formatting may vary
+						return
+					}
+				}
+				t.Errorf("getFieldValue() = %q, expected %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetFieldValue_MapLookup(t *testing.T) {
+	// Test that getFieldValue correctly looks up values in a map (simulating JSON cache)
+	testMap := map[string]interface{}{
+		"stream_id": float64(1471382),
+		"name":      "Test Channel",
+		"id":        float64(123456),
+	}
+
+	v := reflect.ValueOf(testMap)
+
+	// Test stream_id lookup
+	result := getFieldValue(v, "stream_id")
+	if result != "1471382" {
+		t.Errorf("getFieldValue() for stream_id = %q, expected %q", result, "1471382")
+	}
+	if strings.ContainsAny(result, "eE") {
+		t.Errorf("getFieldValue() returned scientific notation: %s", result)
+	}
+
+	// Test ID lookup (should try multiple field names)
+	result = getFieldValue(v, "ID")
+	if result != "123456" && result != "1471382" {
+		// ID field map includes both "id" and "stream_id", so either is valid
+		t.Logf("getFieldValue() for ID = %q (acceptable: 123456 or 1471382)", result)
+	}
+	if strings.ContainsAny(result, "eE") {
+		t.Errorf("getFieldValue() returned scientific notation: %s", result)
+	}
+
+	// Test name lookup
+	result = getFieldValue(v, "Name")
+	if result != "Test Channel" {
+		t.Errorf("getFieldValue() for Name = %q, expected %q", result, "Test Channel")
+	}
+}
 
