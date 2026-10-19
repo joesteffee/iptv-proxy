@@ -119,8 +119,8 @@ pub fn parse(input: &str) -> Result<Playlist, ParseError> {
             continue;
         }
 
-        if let Some(rest) = line.strip_prefix("#EXTINF") {
-            playlist.tracks.push(parse_extinf(rest)?);
+        if line.starts_with("#EXTINF") {
+            playlist.tracks.push(parse_extinf(line)?);
             continue;
         }
 
@@ -128,7 +128,8 @@ pub fn parse(input: &str) -> Result<Playlist, ParseError> {
             continue;
         }
 
-        let uri = line.trim();
+        // Go trimmed ASCII spaces only, so a trailing non-breaking space stayed in the URI.
+        let uri = line.trim_matches(' ');
         match playlist.tracks.last_mut() {
             Some(track) => track.uri = uri.to_string(),
             None => return Err(ParseError(ERR_NO_TRACKS.to_string())),
@@ -139,11 +140,11 @@ pub fn parse(input: &str) -> Result<Playlist, ParseError> {
 }
 
 /// Parses one `#EXTINF...` line into a track whose `uri` is still empty.
-fn parse_extinf(rest: &str) -> Result<Track, ParseError> {
+fn parse_extinf(line: &str) -> Result<Track, ParseError> {
     // Go removed every literal "#EXTINF:" occurrence, so a line such as
-    // `#EXTINF:-1 foo#EXTINF:` lost both. Keep that behaviour: only the leading colon is required.
-    let body = rest.strip_prefix(':').unwrap_or(rest);
-    let body = body.replace("#EXTINF:", "");
+    // `#EXTINF:-1 foo#EXTINF:` lost both. A line that starts with `#EXTINF` but has no colon kept
+    // its prefix, which then failed the length parse — that is reproduced here.
+    let body = line.replace("#EXTINF:", "");
 
     let mut parts = body.split(',');
     let head = parts.next().unwrap_or_default();
@@ -158,7 +159,7 @@ fn parse_extinf(rest: &str) -> Result<Track, ParseError> {
         .map_err(|_| ParseError(ERR_BAD_LENGTH.to_string()))?;
 
     Ok(Track {
-        name: name.trim().to_string(),
+        name: name.trim_matches(' ').to_string(),
         length,
         uri: String::new(),
         tags: extract_tags(&body),
@@ -411,6 +412,26 @@ mod tests {
         // Documented Go behaviour: the name is only the text between the first and second comma.
         let input = "#EXTM3U\n#EXTINF:-1,First, Second\nhttp://e/x\n";
         assert_eq!(parse(input).unwrap().tracks[0].name, "First");
+    }
+
+    #[test]
+    fn name_trims_only_ascii_spaces_like_go() {
+        // Go used `strings.Trim(name, " ")`, so a trailing non-breaking space survived.
+        let input = "#EXTM3U\n#EXTINF:-1,Chan\u{a0} \nhttp://e/x\n";
+        assert_eq!(parse(input).unwrap().tracks[0].name, "Chan\u{a0}");
+    }
+
+    #[test]
+    fn uri_trims_only_ascii_spaces_like_go() {
+        let input = "#EXTM3U\n#EXTINF:-1,C\n  http://e/x\u{a0}\n";
+        assert_eq!(parse(input).unwrap().tracks[0].uri, "http://e/x\u{a0}");
+    }
+
+    #[test]
+    fn extinf_without_a_colon_fails_the_length_parse_like_go() {
+        // Go only stripped the literal "#EXTINF:", so `#EXTINF-1` stayed and was not a number.
+        let err = parse("#EXTM3U\n#EXTINF-1,Name\nhttp://e/x\n").unwrap_err();
+        assert_eq!(err.to_string(), ERR_BAD_LENGTH);
     }
 
     #[test]
