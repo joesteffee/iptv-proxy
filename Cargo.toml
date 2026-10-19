@@ -17,13 +17,10 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8", default-features = false, features = ["http1", "query", "tokio"] }
-base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
-clap = { version = "4", default-features = false, features = ["std", "help", "usage"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 http = "1"
-http-body-util = "0.1"
 percent-encoding = "2"
 redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "stream"] }

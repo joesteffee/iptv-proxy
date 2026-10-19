@@ -1,6 +1,7 @@
 version: "3"
 services:
   iptv-proxy:
+    image: ghcr.io/joesteffee/iptv-proxy:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -21,7 +22,6 @@ services:
       PORT: 8080
       # Hostname or IP to expose the IPTVs endpoints (for machine not for docker)
       HOSTNAME: localhost
-      GIN_MODE: release
       ## Xtream-code proxy configuration
       XTREAM_USER: xtream_user
       XTREAM_PASSWORD: xtream_password
