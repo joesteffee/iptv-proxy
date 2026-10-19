@@ -3,10 +3,11 @@
 //! The track shapes (tag order, naming rules, URL layout) are reproduced byte for byte — see
 //! `tests/golden_playlist.rs`. What differs is how the data is fetched:
 //!
-//! * the three category lists are fetched concurrently instead of one after another;
 //! * streams of different categories, and the `get_series_info` calls of a series list, are fetched
 //!   a few at a time instead of strictly sequentially. Output order is unchanged: results are placed
 //!   back into their original slot, so the playlist is still live → movies → series in API order;
+//! * anything the concurrent pass could not fetch is retried one request at a time, which is what
+//!   makes accounts limited to a single concurrent connection work (see [`fetch_per_category`]);
 //! * responses are cached (in memory always, in Redis additionally when configured) under the same
 //!   keys and TTLs as Go, so a second playlist within the TTL does no upstream work at all.
 //!
@@ -60,11 +61,11 @@ pub async fn generate_tracks(state: &Arc<AppState>, output: &str) -> Result<Vec<
 
     let extension = extension_from_output(output);
 
-    let (live_categories, vod_categories, series_categories) = tokio::try_join!(
-        categories(state, client, "live"),
-        categories(state, client, "vod"),
-        categories(state, client, "series"),
-    )?;
+    // Sequential on purpose. Three requests are nothing on their own, but they set the tone for the
+    // whole build and an account capped at one connection refuses the second of them.
+    let live_categories = categories(state, client, "live").await?;
+    let vod_categories = categories(state, client, "vod").await?;
+    let series_categories = categories(state, client, "series").await?;
 
     let mut tracks = Vec::new();
     tracks.extend(live_tracks(state, client, &live_categories).await?);
@@ -114,13 +115,10 @@ async fn live_tracks(
     Ok(tracks)
 }
 
-/// The Xtream live ID: `stream_id` when present, otherwise `ID`.
+/// The Xtream live ID. Go read the `stream_id` field (falling back to `ID` through the alias chain
+/// on [`Stream::id`]) — never `custom_sid`, which is a per-connection token some providers return.
 fn stream_id_of(stream: &Stream) -> String {
-    if stream.custom_sid.is_empty() {
-        stream.id.get().to_string()
-    } else {
-        stream.custom_sid.clone()
-    }
+    stream.id.get().to_string()
 }
 
 async fn vod_tracks(
@@ -209,19 +207,50 @@ async fn series_tracks(
 }
 
 /// Fetches the info of every series in `chunk`, `None` where the provider never answered.
+///
+/// Same two passes as [`fetch_per_category`]: concurrent first, then the stragglers one at a time,
+/// because a capped account refuses the parallel attempts and a silently missing series is a
+/// silently missing season.
 async fn fetch_series_infos(
     state: &Arc<AppState>,
     client: &XtreamClient,
     chunk: &[SeriesInfo],
 ) -> Vec<Option<Series>> {
-    iter(chunk.to_vec())
-        .map(|serie| async move {
-            let id = serie.series_id.get().to_string();
-            series_info(state, client, &id).await.ok()
+    let ids: Vec<(usize, String)> = chunk
+        .iter()
+        .map(|serie| serie.series_id.get().to_string())
+        .enumerate()
+        .collect();
+
+    let mut results: Vec<Option<Series>> = (0..chunk.len()).map(|_| None).collect();
+    let outcomes = iter(ids)
+        .map(|(index, id)| async move {
+            let for_lookup = id.clone();
+            (index, id, series_info(state, client, &for_lookup).await)
         })
         .buffer_unordered(FETCH_CONCURRENCY)
         .collect::<Vec<_>>()
-        .await
+        .await;
+
+    let mut retryable = Vec::new();
+    for (index, id, result) in outcomes {
+        match result {
+            Ok(info) => results[index] = Some(info),
+            Err(err) => {
+                tracing::debug!("concurrent info fetch for series {id} failed ({err}), retrying");
+                retryable.push((index, id));
+            }
+        }
+    }
+
+    for (index, id) in retryable {
+        match series_info(state, client, &id).await {
+            Ok(info) => results[index] = Some(info),
+            Err(err) => tracing::warn!("series {id} has no usable info: {err}"),
+        }
+    }
+
+    results
 }
 
 /// Turns one series into its episode tracks, following the Go naming rules exactly.
@@ -388,39 +417,96 @@ where
         .collect();
 
     let mut results: Vec<Option<(String, Vec<T>)>> = (0..keyed.len()).map(|_| None).collect();
-    let mut failures: Vec<anyhow::Error> = Vec::new();
 
+    // Pass one: bounded concurrency. This is where the speed over the Go version comes from.
     let outcomes = iter(keyed)
         .map(|(index, key, name, id)| {
             let client = client.clone();
             let state = Arc::clone(state);
             let fetch = fetch.clone();
             async move {
-                let result = cached(&state, &key, move || fetch(client.clone(), id)).await;
-                (index, key, name, result)
+                let fetch_id = id.clone();
+                let result = cached(&state, &key, move || fetch(client.clone(), fetch_id)).await;
+                (index, key, name, id, result)
             }
         })
         .buffer_unordered(FETCH_CONCURRENCY)
         .collect::<Vec<_>>()
         .await;
 
-    for (index, key, name, result) in outcomes {
+    let mut retryable: Vec<(usize, String, String, String)> = Vec::new();
+    let mut last_error: Option<anyhow::Error> = None;
+    for (index, key, name, id, result) in outcomes {
         match result {
             Ok(items) => results[index] = Some((name, items)),
             Err(err) => {
-                tracing::error!("failed to fetch {key}: {err}");
-                failures.push(err.context(format!("fetch {name} streams")));
+                tracing::warn!("concurrent fetch of {key} failed ({err}), retrying sequentially");
+                retryable.push((index, key, name, id));
             }
         }
     }
 
-    if !failures.is_empty() {
+    // Pass two: strictly one request at a time. Providers that cap concurrent connections —
+    // `max_connections: 1` is common — answer `500` to everything that arrives while another
+    // request is in flight, so the whole concurrent pass can fail at once. The Go version never saw
+    // this because it fetched one category at a time, and since a single failed category aborts the
+    // build, dropping straight through to an error here would mean no playlist at all. A healthy
+    // provider pays nothing: nothing failed, so this loop does not run.
+    for (index, key, name, id) in retryable {
+        let attempt = cached_sequential(state, &key, client.clone(), fetch.clone(), id).await;
+        match attempt {
+            Ok(items) => results[index] = Some((name, items)),
+            Err(err) => {
+                tracing::error!("failed to fetch {key}: {err}");
+                last_error = Some(err.context(format!("fetch {name} streams")));
+            }
+        }
+    }
+
+    if let Some(err) = last_error {
         // A partial playlist is worse than an error: the client would silently lose every channel of
         // the failed category. Surface the first failure like Go did.
-        return Err(failures.swap_remove(0));
+        return Err(err);
     }
 
     Ok(results.into_iter().map(Option::unwrap).collect())
+}
+
+/// Fetches one key through [`cached`], retrying transient failures with one request in flight.
+async fn cached_sequential<T, F, Fut>(
+    state: &Arc<AppState>,
+    key: &str,
+    client: XtreamClient,
+    mut fetch: F,
+    id: String,
+) -> Result<Vec<T>>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static,
+    F: FnMut(XtreamClient, String) -> Fut + Send,
+    Fut: std::future::Future<Output = Result<Vec<T>, XtreamError>> + Send,
+{
+    let mut last = None;
+    for attempt in 1..=ITEM_ATTEMPTS {
+        if attempt > 1 {
+            tokio::time::sleep(ITEM_BACKOFF * (attempt - 1)).await;
+        }
+        // Building the future does not start the request, so nothing leaves the process while an
+        // earlier attempt is still being awaited.
+        let pending = fetch(client.clone(), id.clone());
+        match cached(state, key, move || pending).await {
+            Ok(items) => return Ok(items),
+            Err(err) => {
+                let transient = err
+                    .downcast_ref::<XtreamError>()
+                    .is_some_and(XtreamError::is_transient);
+                last = Some(err);
+                if !transient {
+                    break;
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("{key} was not fetched")))
 }
 
 /// Cache-aside for one JSON list: memory, then Redis, then the provider.

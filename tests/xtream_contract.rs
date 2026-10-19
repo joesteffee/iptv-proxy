@@ -3,7 +3,7 @@
 mod support;
 
 use support::{
-    app, config, enable_all, fetch, header_value, post_form, state, xtream_app, AUTH,
+    app, config, enable_all, fetch, header_value, post_form, post_json, state, xtream_app, AUTH,
     PROVIDER_PASSWORD, PROVIDER_USER,
 };
 
@@ -40,6 +40,22 @@ async fn get_php_builds_the_playlist_from_the_provider_api() {
         header_value(&headers, "content-type").as_deref(),
         Some("application/octet-stream")
     );
+}
+
+/// A provider whose account allows one connection at a time answers `500` to everything that
+/// arrives while another request is in flight — the real service this proxy exists for reports
+/// `max_connections: 1`. The Go version fetched sequentially so it never noticed; the concurrent
+/// build must fall back to one request at a time instead of losing the playlist.
+#[tokio::test]
+async fn a_provider_with_one_allowed_connection_still_gets_a_full_playlist() {
+    let provider = support::MockProvider::start().await;
+    provider.set_max_concurrent(1);
+    let app = xtream_app(&provider).await;
+
+    let (status, _, body) = fetch(&app, &format!("/get.php?{AUTH}&type=m3u_plus&output=ts")).await;
+
+    assert_eq!(status, 200, "body: {body}");
+    assert_eq!(body, EXPECTED);
 }
 
 #[tokio::test]
@@ -235,10 +251,18 @@ async fn the_player_api_answers_with_proxy_details() {
     assert_eq!(parsed["user_info"]["username"], "iptv");
     assert_eq!(parsed["user_info"]["password"], "secret");
     assert_eq!(parsed["user_info"]["auth"], 1);
-    assert_eq!(parsed["server_info"]["url"], "http://proxy.test:8080");
-    assert_eq!(parsed["server_info"]["port"], "8080");
-    assert_eq!(parsed["server_info"]["https_port"], "8080");
+    // Go builds `server_info.url` as `protocol + "://" + Hostname` — no port — and reports the
+    // advertised port in `port`, `https_port` and `rtmp_port` as numbers, because its FlexInt
+    // ignores the `,string` tag (it marshals itself).
+    assert_eq!(parsed["server_info"]["url"], "http://proxy.test");
+    assert_eq!(parsed["server_info"]["port"], 8080);
+    assert_eq!(parsed["server_info"]["https_port"], 8080);
+    assert_eq!(parsed["server_info"]["rtmp_port"], 8080);
     assert_eq!(parsed["server_info"]["server_protocol"], "http");
+    // Field order matches the Go struct declaration, which a `serde_json::Value` would sort.
+    let user_at = body.find("\"user_info\"").expect("user_info");
+    let server_at = body.find("\"server_info\"").expect("server_info");
+    assert!(user_at < server_at, "user_info must come first: {body}");
 
     // The provider was asked with its own credentials.
     let api_query = provider.last_api_query();
@@ -421,4 +445,49 @@ async fn auto_detection_does_not_register_the_generic_stream_route() {
     };
     let (status, _, _) = fetch(&app2, "/whatever/credentials/777").await;
     assert_eq!(status, 404);
+}
+
+/// The wide-catalogue version of the single-connection test: enough categories that the concurrent
+/// build genuinely overlaps, which is what makes a connection-capped provider refuse requests.
+#[tokio::test]
+async fn a_connection_capped_provider_falls_back_to_one_request_at_a_time() {
+    let provider = support::MockProvider::start().await;
+    provider.set_wide_catalogue(6);
+    provider.set_max_concurrent(1);
+    let app = xtream_app(&provider).await;
+
+    let ids = |offset: i64| -> serde_json::Map<String, serde_json::Value> {
+        (offset..offset + 6)
+            .map(|i| (i.to_string(), serde_json::Value::Bool(true)))
+            .collect()
+    };
+    let mut enabled = serde_json::Map::new();
+    enabled.insert("live".into(), serde_json::Value::Object(ids(1)));
+    enabled.insert("movies".into(), serde_json::Value::Object(ids(100)));
+    enabled.insert("series".into(), serde_json::Value::Object(ids(200)));
+    let enabled = serde_json::json!({ "enabled": enabled });
+    let (status, _, _) = post_json(&app, "/api/categories", &enabled.to_string()).await;
+    assert_eq!(status, 200);
+
+    let (status, _, body) = fetch(&app, &format!("/get.php?{AUTH}&output=ts")).await;
+    assert_eq!(status, 200, "body: {body}");
+
+    // 6 live + 6 movie + 6 series episodes, each exactly once: nothing lost to the capped provider.
+    let tracks: Vec<&str> = body.lines().skip(1).step_by(2).collect();
+    assert_eq!(tracks.len(), 18, "playlist:\n{body}");
+    for offset in 0..6 {
+        assert!(
+            body.contains(&format!("Channel {}", 1 + offset)),
+            "missing a live channel"
+        );
+        assert!(
+            body.contains(&format!("Film {}", 100 + offset)),
+            "missing a movie"
+        );
+        assert!(
+            body.contains(&format!("Show {}", 200 + offset)),
+            "missing a series"
+        );
+    }
+    assert_eq!(body.matches("#EXTINF").count(), 18);
 }
