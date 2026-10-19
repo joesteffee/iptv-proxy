@@ -129,6 +129,10 @@ Xtream mode (in place of the last two rows):
 - **Fetching.** Categories and per-category stream lists are fetched concurrently and cached, and
   the provider login is reused for an hour. A full playlist build is much faster than one request
   per category.
+- **Providers that allow only one connection.** Some accounts report `max_connections: 1` and
+  answer `500` to any request that overlaps another. When that happens the concurrent pass backs
+  off and the remaining categories are fetched one at a time, so those providers still get a
+  complete playlist instead of an error.
 
 ## Differences from the Go release
 
