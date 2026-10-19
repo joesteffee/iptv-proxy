@@ -263,13 +263,13 @@ pub async fn bootstrap(state: &Arc<AppState>) -> anyhow::Result<usize> {
     if state.config.remote_url.is_empty() {
         anyhow::bail!("M3U_URL is not set");
     }
-    let remote = crate::url::Url::parse(&state.config.remote_url)
-        .map_err(|err| anyhow::anyhow!("M3U_URL is not a valid URL: {err}"))?;
-
-    let text = if remote.scheme == "http" || remote.scheme == "https" {
-        let url = remote.to_string();
-        tracing::info!("downloading playlist from {url}");
-        let response = crate::http::api_client().get(&url).send().await?;
+    // Same rule as the vendored `m3u.Parse`: an `http://`/`https://` prefix means download, anything
+    // else is a path on disk. `M3U_URL=/root/iptv/iptv.m3u` is the packaged default and has no
+    // scheme to parse, so the prefix check happens on the raw string.
+    let remote_url = state.config.remote_url.as_str();
+    let text = if remote_url.starts_with("http://") || remote_url.starts_with("https://") {
+        tracing::info!("downloading playlist from {remote_url}");
+        let response = crate::http::api_client().get(remote_url).send().await?;
         let status = response.status();
         let bytes = response.bytes().await?;
         if !status.is_success() {
@@ -277,17 +277,10 @@ pub async fn bootstrap(state: &Arc<AppState>) -> anyhow::Result<usize> {
         }
         String::from_utf8_lossy(&bytes).to_string()
     } else {
-        // `file:` or a bare path — the Go version handed the string straight to `os.Open`.
-        let path = remote.path.trim_start_matches('/');
-        let path = if remote.host.is_empty() {
-            path.to_string()
-        } else {
-            format!("{}{}", remote.host, remote.path)
-        };
-        tracing::info!("reading playlist from {path}");
-        tokio::fs::read_to_string(&path)
+        tracing::info!("reading playlist from {remote_url}");
+        tokio::fs::read_to_string(remote_url)
             .await
-            .map_err(|err| anyhow::anyhow!("cannot read {path}: {err}"))?
+            .map_err(|err| anyhow::anyhow!("cannot read {remote_url}: {err}"))?
     };
 
     let playlist = m3u::parse(&text)?;

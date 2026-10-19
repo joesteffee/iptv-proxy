@@ -288,9 +288,10 @@ where
         writeln!(writer, "{header}, {name}", name = track.name)?;
         writeln!(writer, "{uri}")?;
 
-        let mut kept_track = track.clone();
-        kept_track.uri = uri;
-        kept.push(kept_track);
+        // The surviving tracks keep their ORIGINAL uri: the stream routes look up a track by index
+        // and fetch that address (`reverseProxy` streams `c.track.URI`). Storing the rewritten
+        // address here would make the proxy request itself.
+        kept.push(track.clone());
     }
 
     writer.flush()?;

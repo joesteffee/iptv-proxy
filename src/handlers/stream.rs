@@ -256,11 +256,6 @@ pub async fn hls_playlist(
     };
 
     let status = response.status().as_u16();
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
 
     if status != 302 {
         // Go surfaced the status and dropped the body here.
@@ -300,7 +295,7 @@ pub async fn hls_playlist(
     state.remember_hls_redirect(id, &location);
 
     // Second hop: the real playlist. Same rate-limit policy.
-    let playlist = loop {
+    let (playlist, playlist_content_type) = loop {
         state
             .rate_limits
             .wait_if_rate_limited(&location, RETRY_INTERVAL)
@@ -336,8 +331,15 @@ pub async fn hls_playlist(
             continue;
         }
 
+        // Go answered with the *playlist* response's Content-Type, not the redirect's.
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+
         match response.bytes().await {
-            Ok(bytes) => break bytes,
+            Ok(bytes) => break (bytes, content_type),
             Err(err) => {
                 tracing::error!("cannot read hls playlist: {err}");
                 return Err(error(
@@ -379,7 +381,7 @@ pub async fn hls_playlist(
         text
     };
 
-    Ok((rewritten.into_bytes(), content_type))
+    Ok((rewritten.into_bytes(), playlist_content_type))
 }
 
 /// Builds a header map from an upstream response for a caller that already has the bytes.

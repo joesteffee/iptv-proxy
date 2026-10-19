@@ -206,11 +206,18 @@ async fn track_route(
         return not_found().await;
     };
 
+    let name = base_name(&track.uri);
+
     if track.uri.ends_with(".m3u8") {
         // `m3u8ReverseProxy`: replace the playlist's own file name with whatever the client asked
         // for, so relative segment requests resolve back through here.
-        let target = track.uri.replace(&base_name(&track.uri), &rest);
+        let target = track.uri.replace(&name, &rest);
         return crate::handlers::stream::stream(&state, &target, request.headers()).await;
+    }
+
+    // `reverseProxy` is registered under the track's own file name, so any other name is a miss.
+    if rest != name {
+        return not_found().await;
     }
 
     crate::handlers::stream::stream(&state, &track.uri, request.headers()).await

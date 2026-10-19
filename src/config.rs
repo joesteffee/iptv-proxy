@@ -454,7 +454,17 @@ pub fn help_text() -> String {
 
     let width = lines.iter().map(|(left, _)| left.len()).max().unwrap_or(0);
     for (left, spec) in &lines {
-        out.push_str(&format!("{left:<width$}  {}\n", spec.help, width = width));
+        // Naming the variable on the same line is what an operator reading a compose file needs.
+        out.push_str(&format!(
+            "{left:<width$}  {} (env {})",
+            spec.help,
+            env_name(spec.name),
+            width = width
+        ));
+        if !spec.is_switch && !spec.default.is_empty() {
+            out.push_str(&format!(" [default: {}]", spec.default));
+        }
+        out.push('\n');
     }
     out.push_str(
         "\nEvery flag can be set through an environment variable built from its name in \
@@ -654,6 +664,11 @@ mod url {
 }
 
 /// Every flag name, in declaration order. Used by `--help` and by the env-parity test.
+/// Every flag the binary accepts, including `--help` and the deprecated ones that are accepted and
+/// ignored for compatibility with existing stacks.
 pub fn flag_names() -> Vec<&'static str> {
-    FLAG_SPECS.iter().map(|spec| spec.name).collect()
+    let mut names: Vec<&'static str> = FLAG_SPECS.iter().map(|spec| spec.name).collect();
+    names.extend(DEPRECATED_FLAGS);
+    names.push("help");
+    names
 }

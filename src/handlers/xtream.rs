@@ -1,12 +1,13 @@
 //! Xtream endpoints: the `player_api.php` façade, the EPG, and the media passthrough routes.
 
-use crate::handlers::stream::{hls_playlist, stream};
-use crate::handlers::{authenticated, error, json_error, Req, Rsp};
+use crate::handlers::stream::{hls_playlist, response_with, stream};
+use crate::handlers::{authenticated, error, json_error, Rsp};
 use crate::state::AppState;
 use crate::url::parse_query;
 use crate::xtream::models::{FlexInt, ServerInfo, UserInfo};
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::Response as AxumResponse;
 use serde_json::{json, Value};
@@ -215,89 +216,116 @@ fn missing_param(name: &str) -> Rsp {
 // Media passthrough
 // ---------------------------------------------------------------------------
 //
-// Every route below ignores the credentials in its own path and uses the configured provider
-// credentials upstream, exactly as Go does — the path credentials exist only to authenticate the
-// client and to satisfy apps that refuse to build a URL without them.
+// Go registered these routes with the proxy's own credentials baked into the path
+// (`/live/{user}/{password}/:id`) and no authenticate middleware, so matching the route *is* the
+// authorisation. Whatever the client put in the path is discarded: the provider is always
+// contacted with the configured Xtream credentials.
+
+/// `{user}/{password}` as it appears in a provider path.
+fn provider_credentials(state: &Arc<AppState>) -> String {
+    format!(
+        "{}/{}",
+        state.config.xtream_user.path_escape(),
+        state.config.xtream_password.path_escape()
+    )
+}
 
 /// `GET /{user}/{password}/{ID}`.
 pub async fn stream_generic(
     State(state): State<Arc<AppState>>,
-    Path((_user, _password, id)): Path<(String, String, String)>,
-    request: Request,
+    Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Rsp {
-    let request = authed!(&state, request);
-    let url = provider_path(&state, &id);
-    dispatch(&state, &url, &id, &request).await
+    let url = format!(
+        "{}/{}/{}",
+        state.config.xtream_base_url,
+        provider_credentials(&state),
+        id
+    );
+    dispatch(&state, &url, &id, &headers).await
 }
 
-/// `GET /live/{user}/{password}/{ID}`. Go strips a trailing `.ts` and asks the provider for the bare
-/// stream id.
+/// `GET /live/{user}/{password}/{ID}`. A trailing `.ts` is stripped — the Xtream live endpoint
+/// takes the bare stream id, and player apps append the extension anyway.
 pub async fn stream_live(
     State(state): State<Arc<AppState>>,
-    Path((_user, _password, id)): Path<(String, String, String)>,
-    request: Request,
+    Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Rsp {
-    let request = authed!(&state, request);
-    let url = provider_path(&state, id.strip_suffix(".ts").unwrap_or(&id));
-    stream(&state, &url, &request.headers).await
+    let bare = id.strip_suffix(".ts").unwrap_or(&id);
+    let url = format!(
+        "{}/{}/{}",
+        state.config.xtream_base_url,
+        provider_credentials(&state),
+        bare
+    );
+    dispatch(&state, &url, &id, &headers).await
 }
 
-/// `GET /movie/{user}/{password}/{ID}`.
+/// `GET /movie/{user}/{password}/{ID}` — the extension is part of the id and is kept.
 pub async fn stream_movie(
     State(state): State<Arc<AppState>>,
-    Path((_user, _password, id)): Path<(String, String, String)>,
-    request: Request,
+    Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Rsp {
-    let request = authed!(&state, request);
-    let url = format!("{}/movie/{}", state.config.xtream_base_url, id);
-    dispatch(&state, &url, &id, &request).await
+    let url = format!(
+        "{}/movie/{}/{}",
+        state.config.xtream_base_url,
+        provider_credentials(&state),
+        id
+    );
+    dispatch(&state, &url, &id, &headers).await
 }
 
 /// `GET /series/{user}/{password}/{ID}`.
 pub async fn stream_series(
     State(state): State<Arc<AppState>>,
-    Path((_user, _password, id)): Path<(String, String, String)>,
-    request: Request,
+    Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Rsp {
-    let request = authed!(&state, request);
-    let url = format!("{}/series/{}", state.config.xtream_base_url, id);
-    dispatch(&state, &url, &id, &request).await
+    let url = format!(
+        "{}/series/{}/{}",
+        state.config.xtream_base_url,
+        provider_credentials(&state),
+        id
+    );
+    dispatch(&state, &url, &id, &headers).await
 }
 
-/// `GET /timeshift/{user}/{password}/{duration}/{start}/{ID}` — never HLS.
+/// `GET /timeshift/{user}/{password}/{duration}/{start}/{ID}` — always plain streaming, never HLS.
 pub async fn stream_timeshift(
     State(state): State<Arc<AppState>>,
-    Path((_user, _password, duration, start, id)): Path<(String, String, String, String, String)>,
-    request: Request,
+    Path((duration, start, id)): Path<(String, String, String)>,
+    headers: HeaderMap,
 ) -> Rsp {
-    let request = authed!(&state, request);
     let url = format!(
-        "{}/timeshift/{duration}/{start}/{id}",
-        state.config.xtream_base_url
-    );
-    stream(&state, &url, &request.headers).await
+        "{}/timeshift/{}/",
+        state.config.xtream_base_url,
+        provider_credentials(&state)
+    ) + &format!("{duration}/{start}/{id}");
+    stream(&state, &url, &headers).await
 }
 
-/// `GET /play/{token}/{type}`.
+/// `GET /play/{token}/{type}`. The token already authorises the stream, so no credentials are
+/// added upstream.
 pub async fn stream_play(
     State(state): State<Arc<AppState>>,
     Path((token, r#type)): Path<(String, String)>,
-    request: Request,
+    headers: HeaderMap,
 ) -> Rsp {
-    let request = authed!(&state, request);
     let url = format!("{}/play/{}/{}", state.config.xtream_base_url, token, r#type);
-    stream(&state, &url, &request.headers).await
+    // Go's xtreamStream keys off the `id` route parameter, which this route does not have, so a
+    // play request is always a plain byte pipe.
+    stream(&state, &url, &headers).await
 }
 
-/// `GET /hls/{token}/{chunk}` — the chunk is `{channel}_{sequence}`, and the real host is whatever
+/// `GET /hls/{token}/{chunk}` — the chunk is `{channel}_{sequence}`, and the real host is the one
 /// the provider redirected to when the playlist was first fetched.
 pub async fn hls_stream(
     State(state): State<Arc<AppState>>,
     Path((token, chunk)): Path<(String, String)>,
-    request: Request,
+    headers: HeaderMap,
 ) -> Rsp {
-    let request = authed!(&state, request);
-
     let channel = match hls_channel(&chunk) {
         Ok(channel) => channel,
         Err(response) => return response,
@@ -308,24 +336,15 @@ pub async fn hls_stream(
     };
 
     let url = format!("{host}/hls/{token}/{chunk}");
-    stream(&state, &url, &request.headers).await
+    stream(&state, &url, &headers).await
 }
 
 /// `GET /hlsr/{token}/{user}/{password}/{channel}/{hash}/{chunk}`.
 pub async fn hlsr_stream(
     State(state): State<Arc<AppState>>,
-    Path((token, _user, _password, channel, hash, chunk)): Path<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-    )>,
-    request: Request,
+    Path((token, channel, hash, chunk)): Path<(String, String, String, String)>,
+    headers: HeaderMap,
 ) -> Rsp {
-    let request = authed!(&state, request);
-
     let host = match redirect_host(&state, &channel).await {
         Ok(host) => host,
         Err(response) => return response,
@@ -333,42 +352,21 @@ pub async fn hlsr_stream(
 
     let url = format!(
         "{host}/hlsr/{token}/{}/{}/{channel}/{hash}/{chunk}",
-        crate::xtream::percent_encode(state.config.xtream_user.as_str()),
-        crate::xtream::percent_encode(state.config.xtream_password.as_str()),
+        state.config.xtream_user.path_escape(),
+        state.config.xtream_password.path_escape(),
     );
-    stream(&state, &url, &request.headers).await
+    stream(&state, &url, &headers).await
 }
 
-/// `{base}/{provider credentials}/{id}` — the shape used by the generic route.
-fn provider_path(state: &Arc<AppState>, id: &str) -> String {
-    format!(
-        "{}/{}/{}/{id}",
-        state.config.xtream_base_url,
-        crate::xtream::percent_encode(state.config.xtream_user.as_str()),
-        crate::xtream::percent_encode(state.config.xtream_password.as_str()),
-    )
-}
-
-/// A `.m3u8` id needs its internal URLs rewritten; anything else streams straight through.
-async fn dispatch(state: &Arc<AppState>, url: &str, id: &str, request: &Req) -> Rsp {
-    if !id.ends_with(".m3u8") {
-        return stream(state, url, &request.headers).await;
-    }
-
-    match hls_playlist(state, url, &request.headers, id).await {
-        Ok((bytes, content_type)) => {
-            let mut builder = AxumResponse::builder().status(StatusCode::OK);
-            if let Some(value) = content_type
-                .as_deref()
-                .and_then(|value| axum::http::HeaderValue::from_str(value).ok())
-            {
-                builder = builder.header("content-type", value);
-            }
-            builder.body(Body::from(bytes)).unwrap_or_else(|_| {
-                error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
-            })
+/// `.m3u8` ids go through the HLS redirect dance, everything else is a plain byte pipe.
+async fn dispatch(state: &Arc<AppState>, url: &str, id: &str, headers: &HeaderMap) -> Rsp {
+    if id.ends_with(".m3u8") {
+        match hls_playlist(state, url, headers, id).await {
+            Ok((body, content_type)) => response_with(content_type.as_deref(), body),
+            Err(response) => response,
         }
-        Err(response) => response,
+    } else {
+        stream(state, url, headers).await
     }
 }
 

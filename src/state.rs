@@ -452,13 +452,31 @@ impl AppState {
     }
 }
 
+impl AppState {
+    /// Puts generated playlist files in `dir` instead of the system temp directory. The integration
+    /// tests use this so parallel runs cannot observe each other's playlists.
+    #[must_use]
+    pub fn with_cache_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.m3u_cache = M3uCache::new(dir);
+        self
+    }
+}
+
 /// Builds a state for unit tests: no provider, no Redis, playlist files in a temp directory.
 #[cfg(test)]
 pub fn test_state(config: crate::config::ProxyConfig) -> Arc<AppState> {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut state = AppState::new(Arc::new(config), None, None);
-    state.m3u_cache = M3uCache::new(dir.keep());
-    Arc::new(state)
+    AppState::new(Arc::new(config), None, None)
+        .with_cache_dir(dir.keep())
+        .into_shared()
+}
+
+impl AppState {
+    /// Convenience for callers that need `Arc<AppState>` immediately.
+    #[must_use]
+    pub fn into_shared(self) -> Arc<AppState> {
+        Arc::new(self)
+    }
 }
 
 #[cfg(test)]
