@@ -40,18 +40,6 @@ impl Serialize for FlexInt {
     }
 }
 
-/// Serialises an integer as a JSON string — Go's `,string` struct tag.
-pub fn quoted<S: Serializer>(value: &FlexInt, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.collect_str(&self::Quote(value.0))
-}
-
-struct Quote(i64);
-impl std::fmt::Display for Quote {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
 struct FlexIntVisitor;
 
 impl<'de> serde::de::Visitor<'de> for FlexIntVisitor {
@@ -171,19 +159,39 @@ impl<'de> Deserialize<'de> for FlexFloat {
 }
 
 /// A boolean arriving as `0`, `1`, `true`, `false` (quoted or not), like Go's `ConvertibleBoolean`.
-/// Marshals back to `0` / `1`, never `true` / `false`.
+/// Marshals back to `0` / `1`, never `true` / `false`, and keeps the quoting the provider used:
+/// that type remembered whether the value arrived inside quotes and repeats it, so a client that
+/// type-checks `is_trial` sees exactly what it saw from the Go proxy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FlexBool(pub bool);
+pub struct FlexBool {
+    /// The parsed value.
+    pub value: bool,
+    quoted: bool,
+}
 
-impl Serialize for FlexBool {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_i8(i8::from(self.0))
+impl FlexBool {
+    /// A boolean that serialises unquoted.
+    pub fn new(value: bool) -> Self {
+        Self {
+            value,
+            quoted: false,
+        }
+    }
+
+    /// The parsed value.
+    pub fn get(self) -> bool {
+        self.value
     }
 }
 
-/// The `,string` variant of [`FlexBool`].
-pub fn quoted_bool<S: Serializer>(value: &FlexBool, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(if value.0 { "1" } else { "0" })
+impl Serialize for FlexBool {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.quoted {
+            serializer.collect_str(if self.value { &"1" } else { &"0" })
+        } else {
+            serializer.serialize_i8(i8::from(self.value))
+        }
+    }
 }
 
 struct FlexBoolVisitor;
@@ -196,30 +204,30 @@ impl<'de> serde::de::Visitor<'de> for FlexBoolVisitor {
     }
 
     fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
-        Ok(FlexBool(v))
+        Ok(FlexBool::new(v))
     }
 
     fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
-        Ok(FlexBool(v != 0))
+        Ok(FlexBool::new(v != 0))
     }
 
     fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
-        Ok(FlexBool(v != 0))
+        Ok(FlexBool::new(v != 0))
     }
 
     fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
-        match v.trim() {
-            "1" | "true" => Ok(FlexBool(true)),
-            _ => Ok(FlexBool(false)),
-        }
+        Ok(FlexBool {
+            value: matches!(v.trim(), "1" | "true"),
+            quoted: true,
+        })
     }
 
     fn visit_none<E>(self) -> Result<Self::Value, E> {
-        Ok(FlexBool(false))
+        Ok(FlexBool::new(false))
     }
 
     fn visit_unit<E>(self) -> Result<Self::Value, E> {
-        Ok(FlexBool(false))
+        Ok(FlexBool::new(false))
     }
 }
 
@@ -229,47 +237,76 @@ impl<'de> Deserialize<'de> for FlexBool {
     }
 }
 
-/// A unix timestamp that may arrive quoted. Serialises to epoch seconds; [`quoted_timestamp`]
-/// emits the string form Go's `,string` tag produces.
+/// A unix timestamp that may arrive quoted. Like Go's `Timestamp` it remembers whether the
+/// provider wrapped it in quotes and emits the same shape, because `,string` has no effect on a
+/// type that marshals itself.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Timestamp(pub i64);
+pub struct Timestamp {
+    seconds: i64,
+    quoted: bool,
+}
 
-impl Serialize for Timestamp {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_i64(self.0)
+impl Timestamp {
+    /// A timestamp that serialises unquoted.
+    pub fn new(seconds: i64) -> Self {
+        Self {
+            seconds,
+            quoted: false,
+        }
+    }
+
+    /// Epoch seconds.
+    pub fn get(self) -> i64 {
+        self.seconds
     }
 }
 
-pub fn quoted_timestamp<S: Serializer>(
-    value: &Timestamp,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.collect_str(&Quote(value.0))
+impl Serialize for Timestamp {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.quoted {
+            serializer.collect_str(&self.seconds)
+        } else {
+            serializer.serialize_i64(self.seconds)
+        }
+    }
+}
+
+struct TimestampVisitor;
+
+impl<'de> serde::de::Visitor<'de> for TimestampVisitor {
+    type Value = Timestamp;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a unix timestamp, quoted or not")
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+        Ok(Timestamp::new(v))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+        Ok(Timestamp::new(v as i64))
+    }
+
+    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+        Ok(Timestamp::new(v as i64))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        let trimmed = v.trim();
+        let seconds = trimmed
+            .parse::<i64>()
+            .map_err(|_| E::custom(format!("\"{trimmed}\" is not a timestamp")))?;
+        Ok(Timestamp {
+            seconds,
+            quoted: true,
+        })
+    }
 }
 
 impl<'de> Deserialize<'de> for Timestamp {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        FlexInt::deserialize(deserializer).map(|v| Timestamp(v.0))
-    }
-}
-
-pub fn quoted_opt_timestamp<S: Serializer>(
-    value: &Option<Timestamp>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    match value {
-        Some(ts) => serializer.collect_str(&Quote(ts.0)),
-        None => serializer.serialize_none(),
-    }
-}
-
-pub fn quoted_opt_int<S: Serializer>(
-    value: &Option<FlexInt>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    match value {
-        Some(v) => serializer.collect_str(&Quote(v.0)),
-        None => serializer.serialize_none(),
+        deserializer.deserialize_any(TimestampVisitor)
     }
 }
 
@@ -316,13 +353,13 @@ fn lenient_string<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, 
 /// `server_info` from the authentication call.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ServerInfo {
-    #[serde(rename = "https_port", serialize_with = "quoted", default)]
+    #[serde(rename = "https_port", default)]
     pub https_port: FlexInt,
-    #[serde(rename = "port", serialize_with = "quoted", default)]
+    #[serde(rename = "port", default)]
     pub port: FlexInt,
     #[serde(rename = "process", default)]
     pub process: bool,
-    #[serde(rename = "rtmp_port", serialize_with = "quoted", default)]
+    #[serde(rename = "rtmp_port", default)]
     pub rtmp_port: FlexInt,
     #[serde(
         rename = "server_protocol",
@@ -332,7 +369,7 @@ pub struct ServerInfo {
     pub protocol: String,
     #[serde(rename = "time_now", default, deserialize_with = "lenient_string")]
     pub time_now: String,
-    #[serde(rename = "timestamp_now", serialize_with = "quoted_timestamp", default)]
+    #[serde(rename = "timestamp_now", default)]
     pub timestamp_now: Timestamp,
     #[serde(rename = "timezone", default, deserialize_with = "lenient_string")]
     pub timezone: String,
@@ -343,12 +380,7 @@ pub struct ServerInfo {
 /// `user_info` from the authentication call.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct UserInfo {
-    #[serde(
-        rename = "active_cons",
-        serialize_with = "quoted",
-        default,
-        alias = "active_connections"
-    )]
+    #[serde(rename = "active_cons", default, alias = "active_connections")]
     pub active_connections: FlexInt,
     #[serde(
         rename = "allowed_output_formats",
@@ -362,9 +394,9 @@ pub struct UserInfo {
     pub created_at: Timestamp,
     #[serde(rename = "exp_date", default)]
     pub exp_date: Option<Timestamp>,
-    #[serde(rename = "is_trial", serialize_with = "quoted_bool", default)]
+    #[serde(rename = "is_trial", default)]
     pub is_trial: FlexBool,
-    #[serde(rename = "max_connections", serialize_with = "quoted", default)]
+    #[serde(rename = "max_connections", default)]
     pub max_connections: FlexInt,
     #[serde(rename = "message", default, deserialize_with = "lenient_string")]
     pub message: String,
@@ -403,7 +435,7 @@ pub struct AuthenticationResponse {
 /// One category, as returned by `get_live_categories` and friends.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Category {
-    #[serde(rename = "category_id", serialize_with = "quoted", default)]
+    #[serde(rename = "category_id", default)]
     pub id: FlexInt,
     #[serde(rename = "category_name", default, deserialize_with = "lenient_string")]
     pub name: String,
@@ -416,7 +448,7 @@ pub struct Category {
 pub struct Stream {
     #[serde(rename = "added", default)]
     pub added: Option<Timestamp>,
-    #[serde(rename = "category_id", serialize_with = "quoted", default)]
+    #[serde(rename = "category_id", default)]
     pub category_id: FlexInt,
     #[serde(rename = "category_name", default, deserialize_with = "lenient_string")]
     pub category_name: String,
@@ -443,7 +475,19 @@ pub struct Stream {
     pub epg_channel_id: String,
     #[serde(rename = "stream_icon", default, deserialize_with = "lenient_string")]
     pub icon: String,
-    #[serde(rename = "stream_id", default)]
+    // Go picked the id with `getFieldValue`, trying `stream_id`, `streamId`, `StreamID` then `ID`
+    // (and, on the VOD path, `vod_id`/`series_id`). Aliases cover the same spellings; when a payload
+    // carries several of them the last one in the document wins rather than the first in Go's chain.
+    #[serde(
+        rename = "stream_id",
+        alias = "id",
+        alias = "ID",
+        alias = "streamId",
+        alias = "StreamID",
+        alias = "vod_id",
+        alias = "series_id",
+        default
+    )]
     pub id: FlexInt,
     #[serde(rename = "name", default, deserialize_with = "lenient_string")]
     pub name: String,
@@ -473,7 +517,7 @@ pub struct SeriesInfo {
     pub backdrop_path: Option<Backdrop>,
     #[serde(rename = "cast", default, deserialize_with = "lenient_string")]
     pub cast: String,
-    #[serde(rename = "category_id", serialize_with = "quoted_opt_int", default)]
+    #[serde(rename = "category_id", default)]
     pub category_id: Option<FlexInt>,
     #[serde(rename = "cover", default, deserialize_with = "lenient_string")]
     pub cover: String,
@@ -489,7 +533,6 @@ pub struct SeriesInfo {
     pub genre: String,
     #[serde(
         rename = "last_modified",
-        serialize_with = "quoted_opt_timestamp",
         default,
         skip_serializing_if = "Option::is_none"
     )]
@@ -500,13 +543,20 @@ pub struct SeriesInfo {
     pub num: FlexInt,
     #[serde(rename = "plot", default, deserialize_with = "lenient_string")]
     pub plot: String,
-    #[serde(rename = "rating", serialize_with = "quoted", default)]
+    #[serde(rename = "rating", default)]
     pub rating: FlexInt,
     #[serde(rename = "rating_5based", default)]
     pub rating_5based: FlexFloat,
     #[serde(rename = "releaseDate", default, deserialize_with = "lenient_string")]
     pub release_date: String,
-    #[serde(rename = "series_id", default)]
+    #[serde(
+        rename = "series_id",
+        alias = "seriesid",
+        alias = "SeriesID",
+        alias = "id",
+        alias = "ID",
+        default
+    )]
     pub series_id: FlexInt,
     #[serde(rename = "stream_type", default, deserialize_with = "lenient_string")]
     pub stream_type: String,
@@ -631,11 +681,11 @@ pub struct EpgInfo {
     pub description: String,
     #[serde(rename = "end", default, deserialize_with = "lenient_string")]
     pub end: String,
-    #[serde(rename = "epg_id", serialize_with = "quoted", default)]
+    #[serde(rename = "epg_id", default)]
     pub epg_id: FlexInt,
     #[serde(rename = "has_archive", default)]
     pub has_archive: FlexBool,
-    #[serde(rename = "id", serialize_with = "quoted", default)]
+    #[serde(rename = "id", default)]
     pub id: FlexInt,
     #[serde(rename = "lang", default, deserialize_with = "lenient_string")]
     pub lang: String,
@@ -678,12 +728,15 @@ mod tests {
     }
 
     #[test]
-    fn category_id_is_emitted_as_string_like_go_string_tag() {
+    fn a_string_tag_does_not_quote_a_type_that_marshals_itself() {
+        // Go's `,string` tag is ignored for FlexInt because the type has its own MarshalJSON, so
+        // `category_id` leaves the Go proxy as a number even though the tag says otherwise.
+        // Verified against the live Go release: {"category_id": 1011, ...}
         let category: Category =
-            serde_json::from_str(r#"{"category_id":123,"category_name":"Sport"}"#).unwrap();
+            serde_json::from_str(r#"{"category_id":"123","category_name":"Sport"}"#).unwrap();
         assert_eq!(
             serde_json::to_string(&category).unwrap(),
-            r#"{"category_id":"123","category_name":"Sport","parent_id":0}"#
+            r#"{"category_id":123,"category_name":"Sport","parent_id":0}"#
         );
     }
 
@@ -734,8 +787,8 @@ mod tests {
             "stream_id is a number: {text}"
         );
         assert!(
-            text.contains("\"category_id\":\"0\""),
-            "category_id is quoted: {text}"
+            text.contains("\"category_id\":0"),
+            "category_id is a number: {text}"
         );
         assert!(
             text.contains("\"added\":null"),
@@ -755,17 +808,41 @@ mod tests {
     }
 
     #[test]
-    fn flex_bool_round_trips_as_zero_or_one() {
-        assert!(serde_json::from_str::<FlexBool>("\"1\"").unwrap().0);
-        assert_eq!(serde_json::to_string(&FlexBool(true)).unwrap(), "1");
-        let auth: UserInfo = serde_json::from_str("{}").unwrap();
-        assert_eq!(serde_json::to_value(&auth).unwrap()["is_trial"], json!("0"));
+    fn flex_bool_round_trips_as_zero_or_one_and_keeps_quoting() {
+        // Go's ConvertibleBoolean remembered whether the provider quoted the value and repeats it,
+        // which is why `auth` leaves as 1 while `is_trial` leaves as "0" for this provider.
+        assert!(serde_json::from_str::<FlexBool>("\"1\"").unwrap().get());
+        assert_eq!(serde_json::to_string(&FlexBool::new(true)).unwrap(), "1");
+        assert_eq!(serde_json::to_string(&FlexBool::new(false)).unwrap(), "0");
+        assert_eq!(
+            serde_json::to_string(&serde_json::from_str::<FlexBool>("\"0\"").unwrap()).unwrap(),
+            "\"0\""
+        );
+        assert_eq!(
+            serde_json::to_string(&serde_json::from_str::<FlexBool>("1").unwrap()).unwrap(),
+            "1"
+        );
+    }
+
+    #[test]
+    fn timestamps_keep_the_provider_quoting() {
+        let quoted: Timestamp = serde_json::from_str("\"1640708634\"").unwrap();
+        assert_eq!(quoted.get(), 1_640_708_634);
+        assert_eq!(serde_json::to_string(&quoted).unwrap(), "\"1640708634\"");
+        let plain: Timestamp = serde_json::from_str("1640708634").unwrap();
+        assert_eq!(serde_json::to_string(&plain).unwrap(), "1640708634");
+        // `added` arrives quoted on this provider and the Go proxy echoed it quoted.
+        let stream: Stream =
+            serde_json::from_str(r#"{"stream_id":1,"added":"1640708634"}"#).unwrap();
+        assert!(serde_json::to_string(&stream)
+            .unwrap()
+            .contains(r#""added":"1640708634""#));
     }
 
     #[test]
     fn timestamps_serialise_as_epoch_seconds() {
         let info: ServerInfo = serde_json::from_str(r#"{"timestamp_now":"1700000000"}"#).unwrap();
-        assert_eq!(info.timestamp_now.0, 1700000000);
+        assert_eq!(info.timestamp_now.get(), 1700000000);
         assert_eq!(
             serde_json::to_value(&info).unwrap()["timestamp_now"],
             json!("1700000000")
@@ -822,10 +899,10 @@ mod tests {
         .unwrap();
         assert_eq!(auth.server_info.port.0, 80);
         assert_eq!(auth.user_info.username, "u");
-        assert!(auth.user_info.auth.0);
+        assert!(auth.user_info.auth.get());
         assert_eq!(auth.user_info.exp_date, None);
         let out = serde_json::to_string(&auth).unwrap();
         assert!(out.contains(r#""user_info""#));
-        assert!(out.contains(r#""max_connections":"1""#));
+        assert!(out.contains(r#""max_connections":1"#));
     }
 }

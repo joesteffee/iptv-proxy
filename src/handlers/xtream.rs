@@ -103,13 +103,18 @@ async fn player_api(state: &Arc<AppState>, params: &[(String, String)]) -> Rsp {
             None => return missing_param("stream_id"),
         },
         // No action (or an unknown one) is a login: the app expects credentials back.
-        _ => login(state).await,
+        _ => return login(state).await,
     };
 
+    json_response(&value)
+}
+
+/// Answer `200 application/json` with anything serialisable, as `gin.Context.JSON` did.
+fn json_response<T: serde::Serialize>(value: &T) -> Rsp {
     AxumResponse::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&value).unwrap_or_else(
+        .body(Body::from(serde_json::to_vec(value).unwrap_or_else(
             |err| format!(r#"{{"error":"{err}"}}"#).into_bytes(),
         )))
         .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"))
@@ -117,7 +122,15 @@ async fn player_api(state: &Arc<AppState>, params: &[(String, String)]) -> Rsp {
 
 /// The rewritten login response: the app stores these credentials and uses them for every later
 /// request, so they must point back here — proxy credentials, proxy host, proxy port.
-async fn login(state: &Arc<AppState>) -> Value {
+/// The login answer. A struct rather than a `serde_json::Value` so the two objects leave in the
+/// order Go declared them (`user_info` first); a `Value` would sort them alphabetically.
+#[derive(serde::Serialize)]
+struct LoginResponse {
+    user_info: UserInfo,
+    server_info: ServerInfo,
+}
+
+async fn login(state: &Arc<AppState>) -> Rsp {
     let config = &state.config;
     let advertised = FlexInt(config.advertised_port as i64);
     let protocol = if config.https { "https" } else { "http" };
@@ -129,10 +142,10 @@ async fn login(state: &Arc<AppState>) -> Value {
             user.password = config.password.as_str().to_string();
 
             let mut server = auth.server_info;
-            server.url = config.advertised_base();
+            server.url = config.advertised_url();
             server.port = advertised;
             server.https_port = advertised;
-            server.rtmp_port = FlexInt(0);
+            server.rtmp_port = advertised;
             server.protocol = protocol.to_string();
             (user, server)
         }
@@ -146,14 +159,14 @@ async fn login(state: &Arc<AppState>) -> Value {
                     password: config.password.as_str().to_string(),
                     status: "Mismatched Login".to_string(),
                     message: err.to_string(),
-                    auth: crate::xtream::models::FlexBool(false),
+                    auth: crate::xtream::models::FlexBool::new(false),
                     ..UserInfo::default()
                 },
                 ServerInfo {
-                    url: config.advertised_base(),
+                    url: config.advertised_url(),
                     port: advertised,
                     https_port: advertised,
-                    rtmp_port: FlexInt(0),
+                    rtmp_port: advertised,
                     protocol: protocol.to_string(),
                     timezone: "UTC".to_string(),
                     ..ServerInfo::default()
@@ -162,7 +175,10 @@ async fn login(state: &Arc<AppState>) -> Value {
         }
     };
 
-    json!({ "user_info": user_info, "server_info": server_info })
+    json_response(&LoginResponse {
+        user_info,
+        server_info,
+    })
 }
 
 fn value_of<T, E>(result: Result<T, E>) -> Value

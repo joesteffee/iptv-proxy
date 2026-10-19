@@ -113,14 +113,9 @@ impl ProxyConfig {
         }
     }
 
-    /// `{scheme}://{hostname}:{advertised_port}` — the base of every URL handed to clients.
-    pub fn advertised_base(&self) -> String {
-        format!(
-            "{}://{}:{}",
-            self.protocol(),
-            self.host_config.hostname,
-            self.advertised_port
-        )
+    /// `{scheme}://{hostname}` — the value `player_api.php` reports as `server_info.url`.
+    pub fn advertised_url(&self) -> String {
+        format!("{}://{}", self.protocol(), self.host_config.hostname)
     }
 }
 

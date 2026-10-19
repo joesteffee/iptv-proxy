@@ -36,6 +36,6 @@ WORKDIR /root
 LABEL org.opencontainers.image.title="iptv-proxy" \
       org.opencontainers.image.description="Reverse proxy for IPTV M3U subscriptions and Xtream Codes server APIs" \
       org.opencontainers.image.source="https://github.com/joesteffee/iptv-proxy" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="GPL-3.0-only"
 
 ENTRYPOINT ["/usr/local/bin/iptv-proxy"]
