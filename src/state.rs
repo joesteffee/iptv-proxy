@@ -81,7 +81,7 @@ impl CategoryFilter {
         };
 
         if bytes.iter().all(|b| b.is_ascii_whitespace()) {
-            tracing::warn!("WARNING: category filter file {} is empty", path.display());
+            tracing::warn!("category filter file {} is empty", path.display());
             return Ok(());
         }
 
@@ -406,11 +406,20 @@ impl AppState {
         let redis = if config.redis_url.is_empty() {
             None
         } else {
-            Some(Arc::new(
-                RedisCache::connect(&config.redis_url)
-                    .await
-                    .context("connect to redis")?,
-            ))
+            match RedisCache::connect(&config.redis_url).await {
+                Ok(cache) => {
+                    tracing::info!("Redis cache initialized successfully");
+                    Some(Arc::new(cache))
+                }
+                // Same as the Go release: a Redis that is down or misspelled costs the shared
+                // catalogue cache, not the proxy.
+                Err(err) => {
+                    tracing::warn!(
+                        "Failed to initialize Redis cache: {err}. Continuing without cache."
+                    );
+                    None
+                }
+            }
         };
 
         Ok(Self::new(Arc::new(config), xtream, redis))
@@ -482,6 +491,30 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Redis that is down or misspelled costs the shared catalogue cache, not the proxy: the Go
+    /// release warned and continued. Before this test, startup awaited a connection manager that
+    /// retries forever, so the container never listened.
+    #[tokio::test]
+    async fn startup_continues_when_redis_is_unreachable() {
+        let config = crate::config::build(&[
+            "--hostname".to_string(),
+            "proxy.test".to_string(),
+            "--redis-url".to_string(),
+            "redis://127.0.0.1:1".to_string(),
+        ])
+        .expect("valid configuration");
+
+        let state = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            AppState::startup(config),
+        )
+        .await
+        .expect("startup must not hang on an unreachable redis")
+        .expect("startup should succeed without redis");
+
+        assert!(state.redis.is_none());
+    }
 
     #[test]
     fn unknown_categories_are_disabled() {

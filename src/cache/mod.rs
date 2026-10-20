@@ -29,6 +29,9 @@ use std::time::Duration;
 
 /// TTL applied to every cached Xtream payload (Go: `7 * 24 * time.Hour`).
 pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// How long to wait for Redis at startup before serving without it.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Fraction of the TTL after which a key becomes eligible for refresh.
 const REFRESH_THRESHOLD: f64 = 0.8;
 /// Give up on a key after this many consecutive failed refreshes.
@@ -61,8 +64,16 @@ pub struct RedisCache {
 impl RedisCache {
     pub async fn connect(url: &str) -> Result<Self> {
         let client = Client::open(url).context("invalid redis URL")?;
-        let conn = ConnectionManager::new(client)
+        // The connection manager retries forever, so a wrong URL would otherwise keep the proxy
+        // from ever listening. The Go version pinged Redis once and carried on without a cache.
+        let conn = tokio::time::timeout(CONNECT_TIMEOUT, ConnectionManager::new(client))
             .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "redis did not answer within {} seconds",
+                    CONNECT_TIMEOUT.as_secs()
+                )
+            })?
             .context("cannot reach redis")?;
         Ok(Self { conn })
     }
@@ -81,7 +92,7 @@ impl RedisCache {
                 Err(err) => {
                     // Go logged the error and fell back to the API; do the same rather than
                     // failing the request outright.
-                    tracing::warn!("WARNING: cached value for {key} is unreadable: {err}");
+                    tracing::warn!("cached value for {key} is unreadable: {err}");
                     Ok(None)
                 }
             },
@@ -273,7 +284,7 @@ async fn refresh_expiring_items(cache: &Arc<RedisCache>, callbacks: &[(String, R
         let keys = match cache.keys(pattern).await {
             Ok(keys) => keys,
             Err(err) => {
-                tracing::warn!("WARNING: cannot list cache keys for {pattern}: {err}");
+                tracing::warn!("cannot list cache keys for {pattern}: {err}");
                 continue;
             }
         };
@@ -288,7 +299,7 @@ async fn check_and_refresh_key(cache: &Arc<RedisCache>, key: &str, callback: &Re
     let ttl = match cache.ttl(key).await {
         Ok(ttl) => ttl,
         Err(err) => {
-            tracing::warn!("WARNING: cannot read TTL for {key}: {err}");
+            tracing::warn!("cannot read TTL for {key}: {err}");
             return;
         }
     };
@@ -330,7 +341,7 @@ async fn check_and_refresh_key(cache: &Arc<RedisCache>, key: &str, callback: &Re
         Ok(()) => {
             tracing::info!("refreshed cache key {key}");
             if let Err(err) = cache.reset_retry_count(key).await {
-                tracing::warn!("WARNING: cannot reset retry count for {key}: {err}");
+                tracing::warn!("cannot reset retry count for {key}: {err}");
             }
         }
         Err(err) => {
@@ -341,7 +352,7 @@ async fn check_and_refresh_key(cache: &Arc<RedisCache>, key: &str, callback: &Re
                 return;
             }
             tracing::warn!(
-                "WARNING: refresh of {key} failed (attempt {attempts}/{MAX_RETRY_ATTEMPTS}): {err}"
+                "refresh of {key} failed (attempt {attempts}/{MAX_RETRY_ATTEMPTS}): {err}"
             );
             let next = Utc::now() + ChronoDuration::from_std(MIN_RETRY_INTERVAL).unwrap();
             let meta = RefreshMetadata {

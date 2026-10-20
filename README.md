@@ -123,7 +123,9 @@ Xtream mode (in place of the last two rows):
 - **Redirects.** Up to 10 are followed; beyond that the request fails with `502` and
   `Too many redirects (N), possible redirect loop`.
 - **Caching.** Generated playlists are written to the container's temp directory and reused until
-  `M3U_CACHE_EXPIRATION` hours have passed. Concurrent requests for the same playlist share one
+  `M3U_CACHE_EXPIRATION` hours have passed. If `REDIS_URL` is set but Redis cannot be reached at
+  startup, the proxy logs a warning and runs without the shared cache rather than refusing to
+  start. Concurrent requests for the same playlist share one
   build, and a build keeps running if the client that started it hangs up — very large catalogues
   take a long time to assemble and an impatient IPTV app should not cost all of that work. With `REDIS_URL` set, catalogue data is cached in Redis for 7 days and refreshed in the
   background before it expires.

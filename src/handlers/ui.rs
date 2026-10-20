@@ -54,21 +54,21 @@ pub async fn get_categories(State(state): State<Arc<AppState>>, _request: Reques
     let live = match crate::generate::categories(&state, client, "live").await {
         Ok(categories) => into_infos(categories, "live", &enabled),
         Err(err) => {
-            tracing::warn!("WARNING: unable to fetch live categories: {err}");
+            tracing::warn!("unable to fetch live categories: {err}");
             Vec::new()
         }
     };
     let movies = match crate::generate::categories(&state, client, "vod").await {
         Ok(categories) => into_infos(categories, "movies", &enabled),
         Err(err) => {
-            tracing::warn!("WARNING: unable to fetch vod categories: {err}");
+            tracing::warn!("unable to fetch vod categories: {err}");
             Vec::new()
         }
     };
     let series = match crate::generate::categories(&state, client, "series").await {
         Ok(categories) => into_infos(categories, "series", &enabled),
         Err(err) => {
-            tracing::warn!("WARNING: unable to fetch series categories: {err}");
+            tracing::warn!("unable to fetch series categories: {err}");
             Vec::new()
         }
     };
@@ -89,7 +89,7 @@ pub async fn update_categories(State(state): State<Arc<AppState>>, request: Requ
     let body = match axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024).await {
         Ok(body) => body,
         Err(err) => {
-            tracing::warn!("WARNING: cannot read categories body: {err}");
+            tracing::warn!("cannot read categories body: {err}");
             return json_error(StatusCode::BAD_REQUEST, "cannot read request body");
         }
     };
@@ -97,7 +97,7 @@ pub async fn update_categories(State(state): State<Arc<AppState>>, request: Requ
     let payload: UpdateCategoriesRequest = match serde_json::from_slice(&body) {
         Ok(payload) => payload,
         Err(err) => {
-            tracing::warn!("WARNING: invalid categories payload: {err}");
+            tracing::warn!("invalid categories payload: {err}");
             return json_error(StatusCode::BAD_REQUEST, format!("invalid JSON body: {err}"));
         }
     };
@@ -107,7 +107,7 @@ pub async fn update_categories(State(state): State<Arc<AppState>>, request: Requ
         if CATEGORY_TYPES.contains(&category_type.as_str()) {
             incoming.insert(category_type, entries);
         } else {
-            tracing::warn!("WARNING: ignoring unknown category type \"{category_type}\"");
+            tracing::warn!("ignoring unknown category type \"{category_type}\"");
         }
     }
 
@@ -118,7 +118,7 @@ pub async fn update_categories(State(state): State<Arc<AppState>>, request: Requ
             .filter
             .save_to_file(&state.config.category_filters_path)
         {
-            tracing::error!("ERROR: unable to persist category filters: {err}");
+            tracing::error!("unable to persist category filters: {err}");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("unable to save category filters: {err}"),

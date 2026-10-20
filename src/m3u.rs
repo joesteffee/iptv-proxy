@@ -268,7 +268,7 @@ where
         let uri = match rewrite(&track.uri, kept.len()) {
             Ok(uri) => uri,
             Err(err) => {
-                tracing::error!("ERROR: track: {}: {}", track.name, err);
+                tracing::error!("track: {}: {}", track.name, err);
                 continue;
             }
         };
