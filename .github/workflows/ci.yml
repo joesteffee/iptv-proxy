@@ -1,40 +1,44 @@
 name: CI
 
 on:
-  pull_request:
-    branches:
-      - main
   push:
-    branches:
-      - main
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  check:
+    name: Lint and test
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.18'
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Cache Go modules
-        uses: actions/cache@v3
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+      - name: Add rustfmt and clippy
+        run: rustup component add rustfmt clippy
 
-      - name: Download dependencies
-        run: go mod download
+      - name: Format
+        run: cargo fmt --all -- --check
 
-      - name: Run tests
-        run: go test -v -race ./...
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
+      # Unit tests, the byte-exact playlist replay against real Go output
+      # (tests/fixtures/go-playlist-slice.m3u), the contract suites for both server modes
+      # (plain M3U and Xtream) and the environment-variable parity suite.
+      - name: Test
+        run: cargo test --all-targets --locked
+
+  build:
+    name: Release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: go build ./...
-
+        run: cargo build --release --locked
+      - name: Smoke test
+        run: ./target/release/iptv-proxy --help

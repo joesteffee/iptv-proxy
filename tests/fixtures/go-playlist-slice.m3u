@@ -1,0 +1,65 @@
+#EXTM3U
+#EXTINF:-1 tvg-name="4K| ASTRO SUPERSPORT" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| ASTRO SUPERSPORT
+http://iptv-proxy.br:8080/live/iptv/password/2162327
+#EXTINF:-1 tvg-id="uk.Sky Sports Main Event" tvg-name="4K| SKY SPORTS MAIN EVENTS UHD" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| SKY SPORTS MAIN EVENTS UHD
+http://iptv-proxy.br:8080/live/iptv/password/1608071
+#EXTINF:-1 tvg-id="uk.Sky Sports Main Event" tvg-name="4K| SKY SPORTS UHD [EVENT]" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| SKY SPORTS UHD [EVENT]
+http://iptv-proxy.br:8080/live/iptv/password/1471387
+#EXTINF:-1 tvg-id="Sky.Sports.Ultra.HD.1.uk" tvg-name="4K| SKY SPORTS 1 UHD" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| SKY SPORTS 1 UHD
+http://iptv-proxy.br:8080/live/iptv/password/1608068
+#EXTINF:-1 tvg-id="Sky.Sports.Ultra.HD.2.uk" tvg-name="4K| SKY SPORTS 2 UHD" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| SKY SPORTS 2 UHD
+http://iptv-proxy.br:8080/live/iptv/password/1608069
+#EXTINF:-1 tvg-name="4K| SKY SPORTS F1 UHD" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| SKY SPORTS F1 UHD
+http://iptv-proxy.br:8080/live/iptv/password/1761500
+#EXTINF:-1 tvg-id="SkySportsF1.uk" tvg-name="4K| SKY SPORTS DARTS UHD" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| SKY SPORTS DARTS UHD
+http://iptv-proxy.br:8080/live/iptv/password/1471382
+#EXTINF:-1 tvg-name="4K| TNT ULTIMATE 4K+ [LIVE-EVENT]" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| TNT ULTIMATE 4K+ [LIVE-EVENT]
+http://iptv-proxy.br:8080/live/iptv/password/1595637
+#EXTINF:-1 tvg-id="TNTSports.ar" tvg-name="4K| TNT SPORTS UHD [EVENT]" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| TNT SPORTS UHD [EVENT]
+http://iptv-proxy.br:8080/live/iptv/password/1479591
+#EXTINF:-1 tvg-name="4K| ULTRA CINEMA UHD/4K" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| ULTRA CINEMA UHD/4K
+http://iptv-proxy.br:8080/live/iptv/password/1479590
+#EXTINF:-1 tvg-id="ca.Sportsnet 360 HD" tvg-name="4K| SPORTSNET 360 UHD" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| SPORTSNET 360 UHD
+http://iptv-proxy.br:8080/live/iptv/password/1470603
+#EXTINF:-1 tvg-id="ESPN.us" tvg-name="4K| ESPN UHD" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| ESPN UHD
+http://iptv-proxy.br:8080/live/iptv/password/1481941
+#EXTINF:-1 tvg-id="ElevenSports1.pt" tvg-name="4K| ELEVEN SPORTS 1 UHD" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| ELEVEN SPORTS 1 UHD
+http://iptv-proxy.br:8080/live/iptv/password/1470618
+#EXTINF:-1 tvg-id="ZiggoSport.nl" tvg-name="4K| ZIGGO SPORT UHD" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| ZIGGO SPORT UHD
+http://iptv-proxy.br:8080/live/iptv/password/1481950
+#EXTINF:-1 tvg-name="4K| OUR SIBERIA UHD/4K" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| OUR SIBERIA UHD/4K
+http://iptv-proxy.br:8080/live/iptv/password/1471378
+#EXTINF:-1 tvg-name="4K| V SPORT+ UHD" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| V SPORT+ UHD
+http://iptv-proxy.br:8080/live/iptv/password/1632123
+#EXTINF:-1 tvg-id="5Sport4K.il" tvg-name="4K| KINO UHD/4K" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4K| KINO UHD/4K
+http://iptv-proxy.br:8080/live/iptv/password/1470620
+#EXTINF:-1 tvg-name="4k| V SPORT UHD/4K" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4k| V SPORT UHD/4K
+http://iptv-proxy.br:8080/live/iptv/password/1749221
+#EXTINF:-1 tvg-name="4k| YES SPORT 5 UHD/4K" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4k| YES SPORT 5 UHD/4K
+http://iptv-proxy.br:8080/live/iptv/password/1749220
+#EXTINF:-1 tvg-name="4k| QUADRO UHD/4K" tvg-logo="http://103.176.90.154/picons/logos/LOGOSNEW/4K.png" group-title="4K UHD 3840P", 4k| QUADRO UHD/4K
+http://iptv-proxy.br:8080/live/iptv/password/1749219
+#EXTINF:-1 tvg-name="EN - Water For Elephants (2011)" tvg-logo="https://image.tmdb.org/t/p/original/gFecvcFW0z0MRlBxjBwcmxAglbt.jpg" group-title="TOP IMDB/OSCAR MOVIES", EN - Water For Elephants (2011)
+http://iptv-proxy.br:8080/movie/iptv/password/2129873.mp4
+#EXTINF:-1 tvg-name="EN - The King's Speech (2010)" tvg-logo="https://image.tmdb.org/t/p/original/dUr1eaeI7E27colevU0GKNlvbgf.jpg" group-title="TOP IMDB/OSCAR MOVIES", EN - The King's Speech (2010)
+http://iptv-proxy.br:8080/movie/iptv/password/2099085.mp4
+#EXTINF:-1 tvg-name="EN - Cleopatra (1963)" tvg-logo="https://image.tmdb.org/t/p/original/bDwOWW8iVKQtHeqTyb409Uu6YJ1.jpg" group-title="TOP IMDB/OSCAR MOVIES", EN - Cleopatra (1963)
+http://iptv-proxy.br:8080/movie/iptv/password/2038450.mkv
+#EXTINF:-1 tvg-name="EN - They Live (1988)" tvg-logo="https://image.tmdb.org/t/p/original/ytjWbKNQzlO7ItPWowSIqCGvVpO.jpg" group-title="TOP IMDB/OSCAR MOVIES", EN - They Live (1988)
+http://iptv-proxy.br:8080/movie/iptv/password/2022025.mp4
+#EXTINF:-1 tvg-name="EN - Before Sunrise (1995)" tvg-logo="https://image.tmdb.org/t/p/original/gI3GututWWGw3P6MPEPxydv287q.jpg" group-title="TOP IMDB/OSCAR MOVIES", EN - Before Sunrise (1995)
+http://iptv-proxy.br:8080/movie/iptv/password/1952862.mp4
+#EXTINF:-1 tvg-name="EN - Blue Velvet (1986)" tvg-logo="https://image.tmdb.org/t/p/original/mtQaQMBaJ9LVlm10emKoe7ZoLz5.jpg" group-title="TOP IMDB/OSCAR MOVIES", EN - Blue Velvet (1986)
+http://iptv-proxy.br:8080/movie/iptv/password/1937213.mkv
+#EXTINF:-1 tvg-logo="https://image.tmdb.org/t/p/original/geCQyGKyWCJlMoQa9ytyzwz0wMv.jpg" tvg-name="NF - House Of Guinness 4K (2025) (GB) - S01E01 - Episode 1" group-title="|MULTI| NETFLIX SERIES 4K", NF - House Of Guinness 4K (2025) (GB) - S01E01 - Episode 1
+http://iptv-proxy.br:8080/series/iptv/password/2162716.mkv
+#EXTINF:-1 tvg-logo="https://image.tmdb.org/t/p/original/geCQyGKyWCJlMoQa9ytyzwz0wMv.jpg" tvg-name="NF - House Of Guinness 4K (2025) (GB) - S01E02 - Episode 2" group-title="|MULTI| NETFLIX SERIES 4K", NF - House Of Guinness 4K (2025) (GB) - S01E02 - Episode 2
+http://iptv-proxy.br:8080/series/iptv/password/2162717.mkv
+#EXTINF:-1 tvg-logo="https://image.tmdb.org/t/p/original/geCQyGKyWCJlMoQa9ytyzwz0wMv.jpg" tvg-name="NF - House Of Guinness 4K (2025) (GB) - S01E03 - Episode 3" group-title="|MULTI| NETFLIX SERIES 4K", NF - House Of Guinness 4K (2025) (GB) - S01E03 - Episode 3
+http://iptv-proxy.br:8080/series/iptv/password/2162718.mkv
+#EXTINF:-1 tvg-logo="https://image.tmdb.org/t/p/original/geCQyGKyWCJlMoQa9ytyzwz0wMv.jpg" tvg-name="NF - House Of Guinness 4K (2025) (GB) - S01E04 - Episode 4" group-title="|MULTI| NETFLIX SERIES 4K", NF - House Of Guinness 4K (2025) (GB) - S01E04 - Episode 4
+http://iptv-proxy.br:8080/series/iptv/password/2162719.mkv
+#EXTINF:-1 tvg-logo="https://image.tmdb.org/t/p/original/geCQyGKyWCJlMoQa9ytyzwz0wMv.jpg" tvg-name="NF - House Of Guinness 4K (2025) (GB) - S01E05 - Episode 5" group-title="|MULTI| NETFLIX SERIES 4K", NF - House Of Guinness 4K (2025) (GB) - S01E05 - Episode 5
+http://iptv-proxy.br:8080/series/iptv/password/2162720.mkv
+#EXTINF:-1 tvg-logo="https://image.tmdb.org/t/p/original/geCQyGKyWCJlMoQa9ytyzwz0wMv.jpg" tvg-name="NF - House Of Guinness 4K (2025) (GB) - S01E06 - Episode 6" group-title="|MULTI| NETFLIX SERIES 4K", NF - House Of Guinness 4K (2025) (GB) - S01E06 - Episode 6
+http://iptv-proxy.br:8080/series/iptv/password/2162721.mkv
