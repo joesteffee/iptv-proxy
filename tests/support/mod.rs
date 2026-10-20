@@ -587,6 +587,15 @@ pub fn app(state: Arc<iptv_proxy::state::AppState>) -> Router {
 
 /// An xtream-mode proxy with every category of the mock catalogue enabled.
 pub async fn xtream_app(provider: &Arc<MockProvider>) -> Router {
+    let (app, _) = xtream_state_app(provider).await;
+    enable_all(&app).await;
+    app
+}
+
+/// The same as [`xtream_app`], but also returns the `AppState` so a test can inspect the cache.
+pub async fn xtream_state_app(
+    provider: &Arc<MockProvider>,
+) -> (Router, Arc<iptv_proxy::state::AppState>) {
     let cfg = config(
         &provider.base,
         &[
@@ -598,9 +607,9 @@ pub async fn xtream_app(provider: &Arc<MockProvider>) -> Router {
             PROVIDER_PASSWORD,
         ],
     );
-    let app = app(state(cfg).await);
-    enable_all(&app).await;
-    app
+    let state = state(cfg).await;
+    let app = app(Arc::clone(&state));
+    (app, state)
 }
 
 /// A plain (non-xtream) proxy serving the provider's static playlist, with tracks loaded.
