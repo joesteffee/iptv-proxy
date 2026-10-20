@@ -248,8 +248,7 @@ async fn categories_cannot_be_changed_without_an_xtream_provider() {
     let (status, _, body) = fetch(&app, "/api/categories").await;
     assert_eq!(status, 400);
     assert_eq!(
-        body,
-        r#"{"error":"Xtream service not configured"}"#,
+        body, r#"{"error":"Xtream service not configured"}"#,
         "the same wording the Go release sent"
     );
 }
