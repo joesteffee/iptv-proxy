@@ -46,7 +46,7 @@ pub async fn serve_web_ui() -> impl IntoResponse {
 /// Lists every provider category with its current on/off state.
 pub async fn get_categories(State(state): State<Arc<AppState>>, _request: Request) -> Rsp {
     let Some(client) = state.xtream.as_ref() else {
-        return json_error(StatusCode::BAD_REQUEST, "Xtream backend is not configured");
+        return json_error(StatusCode::BAD_REQUEST, "Xtream service not configured");
     };
 
     let enabled = state.filter.snapshot();
@@ -158,7 +158,7 @@ fn json<T: Serialize>(status: StatusCode, value: &T) -> Rsp {
     match serde_json::to_vec(value) {
         Ok(bytes) => axum::response::Response::builder()
             .status(status)
-            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
             .body(Body::from(bytes))
             .unwrap_or_else(|_| json_error(StatusCode::INTERNAL_SERVER_ERROR, "encoding failed")),
         Err(err) => json_error(

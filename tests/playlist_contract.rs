@@ -230,9 +230,14 @@ async fn the_web_ui_and_the_404_page_are_served_without_credentials() {
     );
     assert!(body.contains("IPTV Proxy - Category Manager"), "{body}");
 
-    let (status, _, body) = fetch(&app, "/definitely-not-a-track").await;
+    let (status, headers, body) = fetch(&app, "/definitely-not-a-track").await;
     assert_eq!(status, 404);
     assert_eq!(body, "404 page not found");
+    assert_eq!(
+        header_value(&headers, "content-type").as_deref(),
+        Some("text/plain"),
+        "gin labels its default 404 as plain text"
+    );
 }
 
 #[tokio::test]
@@ -242,5 +247,8 @@ async fn categories_cannot_be_changed_without_an_xtream_provider() {
 
     let (status, _, body) = fetch(&app, "/api/categories").await;
     assert_eq!(status, 400);
-    assert!(body.contains("error"), "{body}");
+    assert_eq!(
+        body, r#"{"error":"Xtream service not configured"}"#,
+        "the same wording the Go release sent"
+    );
 }

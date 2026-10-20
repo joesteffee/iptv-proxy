@@ -61,10 +61,17 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(move || {
                 let target = redirect_target.clone();
                 async move {
+                    // Byte for byte what net/http's http.Redirect wrote, body included: scrapers
+                    // that follow redirects read the link out of that HTML.
+                    let body = format!(
+                        "<a href=\"{}\">Moved Permanently</a>.\n\n",
+                        html_escape(&target)
+                    );
                     axum::response::Response::builder()
                         .status(StatusCode::MOVED_PERMANENTLY)
-                        .header(axum::http::header::LOCATION, target)
-                        .body(axum::body::Body::empty())
+                        .header(axum::http::header::LOCATION, &target)
+                        .header("content-type", "text/html; charset=utf-8")
+                        .body(axum::body::Body::from(body))
                         .unwrap_or_else(|_| {
                             crate::handlers::error(StatusCode::MOVED_PERMANENTLY, "")
                         })
@@ -140,15 +147,6 @@ fn xtream_routes(state: &Arc<AppState>, prefix: &str, table: &mut Vec<(String, M
         get(xtream::stream_series),
     ));
 
-    if xtream_auto(&state.config) {
-        // Go returns right here: the playlist route replaces the generic stream route.
-        table.push((
-            format!("{prefix}/{}", state.config.m3u_file_name.trim_matches('/')),
-            get(playlist::xtream_get_auto).post(playlist::xtream_get_auto),
-        ));
-        return;
-    }
-
     table.push((
         format!("{prefix}/{user}/{password}/{{id}}"),
         get(xtream::stream_generic),
@@ -165,6 +163,19 @@ fn xtream_routes(state: &Arc<AppState>, prefix: &str, table: &mut Vec<(String, M
         format!("{prefix}/play/{{token}}/{{type}}"),
         get(xtream::stream_play),
     ));
+
+    if xtream_auto(&state.config) {
+        // Go returns right here: the playlist comes from the provider and the plain-M3U routes —
+        // the file route and the per-track ones — are never registered.
+        table.push((
+            format!("{prefix}/{}", state.config.m3u_file_name.trim_matches('/')),
+            get(playlist::xtream_get_auto).post(playlist::xtream_get_auto),
+        ));
+    } else {
+        // An Xtream provider that is not the one in `M3U_URL`: gin carried on and registered the
+        // playlist file and the track routes as well.
+        m3u_routes(state, prefix, table);
+    }
 }
 
 /// The plain-M3U surface: the playlist file plus one streaming route for every parsed track.
@@ -229,9 +240,32 @@ fn base_name(uri: &str) -> String {
         .unwrap_or_else(|_| uri.rsplit('/').next().unwrap_or(uri).to_string())
 }
 
+/// `net/http`'s `htmlEscaper`, applied to the target inside the redirect's HTML body.
+fn html_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\u{7f}' => {}
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            '\'' => out.push_str("&#39;"),
+            '"' => out.push_str("&#34;"),
+            '\n' => out.push_str("&#10;"),
+            '\r' => out.push_str("&#13;"),
+            '+' => out.push_str("&#43;"),
+            '=' => out.push_str("&#61;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 async fn not_found() -> Rsp {
     axum::http::Response::builder()
         .status(StatusCode::NOT_FOUND)
+        // Exactly what gin sends for its default no-route handler.
+        .header("content-type", "text/plain")
         .body(axum::body::Body::from("404 page not found"))
         .unwrap_or_else(|_| crate::handlers::error(StatusCode::NOT_FOUND, "Not Found"))
 }
@@ -381,6 +415,17 @@ mod tests {
             response.headers().get("location").unwrap(),
             "/tv/",
             "matching gin's RedirectTrailingSlash"
+        );
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            &axum::body::to_bytes(response.into_body(), 1_024)
+                .await
+                .unwrap()[..],
+            b"<a href=\"/tv/\">Moved Permanently</a>.\n\n",
+            "the same body net/http's Redirect wrote"
         );
     }
 
