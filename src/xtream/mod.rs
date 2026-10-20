@@ -175,7 +175,7 @@ impl XtreamClient {
                 Ok(value) => return Ok(value),
                 Err(err) if attempt < attempts && err.is_transient() => {
                     tracing::warn!(
-                        "WARNING: transient error on attempt {attempt}/{attempts}, retrying: {err}"
+                        "transient error on attempt {attempt}/{attempts}, retrying: {err}"
                     );
                     tokio::time::sleep(backoff * attempt).await;
                     attempt += 1;

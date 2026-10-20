@@ -63,9 +63,7 @@ pub async fn stream(state: &Arc<AppState>, url: &str, request_headers: &HeaderMa
                 None => {
                     // A 3xx with no Location is malformed but does happen; Go streamed the body it
                     // came with instead of failing the client, so do the same.
-                    tracing::warn!(
-                        "WARNING: {status} response missing Location header for URL: {current}"
-                    );
+                    tracing::warn!("{status} response missing Location header for URL: {current}");
                 }
             }
         }
@@ -115,7 +113,7 @@ pub async fn stream(state: &Arc<AppState>, url: &str, request_headers: &HeaderMa
 
     let status = response.status();
     if status.as_u16() >= 400 {
-        tracing::warn!("WARNING: received error status {status} from upstream for URL: {current}");
+        tracing::warn!("received error status {status} from upstream for URL: {current}");
     }
 
     let mut headers = HeaderMap::new();

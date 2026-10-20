@@ -174,13 +174,13 @@ async fn fetch_passthrough_playlist(state: &Arc<AppState>, url: &str) -> Result<
         .send()
         .await
         .map_err(|err| {
-            tracing::error!("ERROR: Failed to fetch M3U from Xtream: {err}");
+            tracing::error!("Failed to fetch M3U from Xtream: {err}");
             error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
         })?;
 
     let status = response.status();
     let body = response.bytes().await.map_err(|err| {
-        tracing::error!("ERROR: Failed to read M3U response: {err}");
+        tracing::error!("Failed to read M3U response: {err}");
         error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
     })?;
 
@@ -189,7 +189,7 @@ async fn fetch_passthrough_playlist(state: &Arc<AppState>, url: &str) -> Result<
 
     if !status.is_success() {
         tracing::error!(
-            "ERROR: Xtream server returned status {} for M3U request. Response: {}",
+            "Xtream server returned status {} for M3U request. Response: {}",
             status.as_u16(),
             truncate(trimmed, 500)
         );
@@ -198,7 +198,7 @@ async fn fetch_passthrough_playlist(state: &Arc<AppState>, url: &str) -> Result<
         // Some providers answer with a non-standard status but a usable playlist.
         if trimmed.contains("#EXTM3U") {
             tracing::warn!(
-                "WARNING: Non-200 status but response contains #EXTM3U, attempting to parse anyway"
+                "Non-200 status but response contains #EXTM3U, attempting to parse anyway"
             );
         } else {
             return Err(Response::builder()
@@ -210,7 +210,7 @@ async fn fetch_passthrough_playlist(state: &Arc<AppState>, url: &str) -> Result<
 
     if trimmed.is_empty() || trimmed == "#EXTM3U" || !trimmed.contains("#EXTINF") {
         tracing::warn!(
-            "WARNING: Xtream server returned empty or invalid M3U file (length: {} bytes). Response preview: {}",
+            "Xtream server returned empty or invalid M3U file (length: {} bytes). Response preview: {}",
             body.len(),
             truncate(trimmed, 200)
         );
@@ -218,12 +218,12 @@ async fn fetch_passthrough_playlist(state: &Arc<AppState>, url: &str) -> Result<
     }
 
     let playlist = m3u::parse(&text).map_err(|err| {
-        tracing::error!("ERROR: Failed to parse M3U content: {err}");
+        tracing::error!("Failed to parse M3U content: {err}");
         error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
     })?;
 
     if playlist.is_empty() {
-        tracing::warn!("WARNING: Parsed M3U playlist contains 0 tracks. This might indicate an authentication or configuration issue.");
+        tracing::warn!("Parsed M3U playlist contains 0 tracks. This might indicate an authentication or configuration issue.");
     } else {
         tracing::info!("Successfully parsed M3U with {} tracks", playlist.len());
     }
@@ -236,7 +236,7 @@ async fn generate_playlist(state: &Arc<AppState>, key: &str, output: &str) -> Re
     let tracks = generate::generate_tracks(state, output)
         .await
         .map_err(|err| {
-            tracing::error!("ERROR: unable to generate playlist: {err}");
+            tracing::error!("unable to generate playlist: {err}");
             error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
         })?;
 
@@ -267,7 +267,7 @@ async fn store_rewritten(
     }
 
     state.m3u_cache.store(key, out).await.map_err(|err| {
-        tracing::error!("ERROR: Failed to cache M3U: {err}");
+        tracing::error!("Failed to cache M3U: {err}");
         error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
     })
 }
