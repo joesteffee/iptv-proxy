@@ -1,7 +1,7 @@
 //! Xtream endpoints: the `player_api.php` façade, the EPG, and the media passthrough routes.
 
 use crate::handlers::stream::{hls_playlist, response_with, stream};
-use crate::handlers::{authenticated, error, json_error, Rsp};
+use crate::handlers::{authenticated, error, Rsp};
 use crate::state::AppState;
 use crate::url::parse_query;
 use crate::xtream::models::{FlexInt, ServerInfo, UserInfo};
@@ -10,7 +10,6 @@ use axum::extract::{Path, Request, State};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::Response as AxumResponse;
-use serde_json::{json, Value};
 use std::sync::Arc;
 
 /// Runs `handler` only once the client's credentials check out.
@@ -28,7 +27,11 @@ pub async fn xmltv(State(state): State<Arc<AppState>>, request: Request) -> Rsp 
     authed!(&state, request);
 
     let Some(client) = state.xtream.as_ref() else {
-        return error(StatusCode::BAD_REQUEST, "Xtream backend is not configured");
+        // The Go release failed to build the provider client here and aborted with a bare 500.
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Xtream backend is not configured",
+        );
     };
 
     match client.xmltv().await {
@@ -67,53 +70,88 @@ pub async fn player_api_post(State(state): State<Arc<AppState>>, request: Reques
 /// after it "logs in".
 async fn player_api(state: &Arc<AppState>, params: &[(String, String)]) -> Rsp {
     let Some(client) = state.xtream.as_ref() else {
-        return error(StatusCode::BAD_REQUEST, "Xtream backend is not configured");
+        // `xtreamapi.New` failed in the Go version: a bare 500.
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Xtream backend is not configured",
+        );
     };
 
-    let value = match param(params, "action").as_deref() {
-        Some("get_live_categories") => value_of(client.categories("live").await),
-        Some("get_vod_categories") => value_of(client.categories("vod").await),
-        Some("get_series_categories") => value_of(client.categories("series").await),
-        Some("get_live_streams") => match required(params, "category_id") {
-            Some(id) => value_of(client.streams("live", &id).await),
-            None => return missing_param("category_id"),
-        },
-        Some("get_vod_streams") => match required(params, "category_id") {
-            Some(id) => value_of(client.streams("vod", &id).await),
-            None => return missing_param("category_id"),
-        },
-        Some("get_series") => match required(params, "category_id") {
-            Some(id) => value_of(client.series(&id).await),
-            None => return missing_param("category_id"),
-        },
+    // Only `series_id`, `vod_id` and `stream_id` are validated by the Go version. The three stream
+    // list actions take `category_id` optionally and answer with every item when it is absent, so
+    // they must not be gated on it.
+    let value: Result<serde_json::Value, anyhow::Error> = match param(params, "action").as_deref() {
+        Some("get_live_categories") => map_err(client.categories("live").await),
+        Some("get_vod_categories") => map_err(client.categories("vod").await),
+        Some("get_series_categories") => map_err(client.categories("series").await),
+        Some("get_live_streams") => map_err(
+            client
+                .streams("live", &optional(params, "category_id"))
+                .await,
+        ),
+        Some("get_vod_streams") => map_err(
+            client
+                .streams("vod", &optional(params, "category_id"))
+                .await,
+        ),
+        Some("get_series") => map_err(client.series(&optional(params, "category_id")).await),
         Some("get_series_info") => match required(params, "series_id") {
-            Some(id) => value_of(crate::generate::series_info(state, client, &id).await),
+            Some(id) => crate::generate::series_info(state, client, &id)
+                .await
+                .and_then(|value| Ok(serde_json::to_value(value)?)),
             None => return missing_param("series_id"),
         },
         Some("get_vod_info") => match required(params, "vod_id") {
-            Some(id) => value_of(client.vod_info(&id).await),
+            Some(id) => map_err(client.vod_info(&id).await),
             None => return missing_param("vod_id"),
         },
-        Some("get_short_epg") => match required(params, "stream_id") {
-            Some(id) => value_of(client.short_epg(&id, limit(params)).await),
-            None => return missing_param("stream_id"),
+        Some("get_short_epg") => match (required(params, "stream_id"), epg_limit(params)) {
+            (Some(id), Some(limit)) => map_err(client.short_epg(&id, limit).await),
+            (None, _) => return missing_param("stream_id"),
+            // `strconv.Atoi` on anything unparsable was a 500 in the Go version.
+            (_, None) => return error(StatusCode::INTERNAL_SERVER_ERROR, "limit is not a number"),
         },
         Some("get_simple_data_table") => match required(params, "stream_id") {
-            Some(id) => value_of(client.epg(&id).await),
+            Some(id) => map_err(client.epg(&id).await),
             None => return missing_param("stream_id"),
         },
         // No action (or an unknown one) is a login: the app expects credentials back.
         _ => return login(state).await,
     };
 
-    json_response(&value)
+    match value {
+        Ok(value) => json_response(&value),
+        Err(err) => action_failure(param(params, "action").as_deref().unwrap_or("login"), &err),
+    }
 }
 
-/// Answer `200 application/json` with anything serialisable, as `gin.Context.JSON` did.
+/// Keep every provider call in one error type so a single arm can answer the Go release's shape.
+fn map_err<T: serde::Serialize>(
+    result: Result<T, crate::xtream::XtreamError>,
+) -> Result<serde_json::Value, anyhow::Error> {
+    Ok(serde_json::to_value(result?)?)
+}
+
+/// `category_id` and friends for the actions that treat them as optional: missing or empty both
+/// mean "not given", exactly like `len(q["category_id"]) > 0`.
+fn optional(params: &[(String, String)], name: &str) -> String {
+    param(params, name).unwrap_or_default()
+}
+
+/// `Some(limit)` to send (0 means "no limit param"), `None` when the caller sent something that is
+/// not an integer.
+fn epg_limit(params: &[(String, String)]) -> Option<i64> {
+    match param(params, "limit") {
+        Some(value) => value.parse::<i64>().ok(),
+        None => Some(0),
+    }
+}
+
+/// Answer `200 application/json; charset=utf-8` with anything serialisable, as `gin.Context.JSON` did.
 fn json_response<T: serde::Serialize>(value: &T) -> Rsp {
     AxumResponse::builder()
         .status(StatusCode::OK)
-        .header("content-type", "application/json")
+        .header("content-type", "application/json; charset=utf-8")
         .body(Body::from(serde_json::to_vec(value).unwrap_or_else(
             |err| format!(r#"{{"error":"{err}"}}"#).into_bytes(),
         )))
@@ -135,66 +173,32 @@ async fn login(state: &Arc<AppState>) -> Rsp {
     let advertised = FlexInt(config.advertised_port as i64);
     let protocol = if config.https { "https" } else { "http" };
 
-    let (user_info, server_info) = match state.authenticate().await {
-        Ok(auth) => {
-            let mut user = auth.user_info;
-            user.username = config.user.as_str().to_string();
-            user.password = config.password.as_str().to_string();
-
-            let mut server = auth.server_info;
-            server.url = config.advertised_url();
-            server.port = advertised;
-            server.https_port = advertised;
-            server.rtmp_port = advertised;
-            server.protocol = protocol.to_string();
-            (user, server)
-        }
+    let auth = match state.authenticate().await {
+        Ok(auth) => auth,
+        // The Go release logged in while *building* the provider client, so a provider that would
+        // not answer failed here with a bare 500 rather than inventing a payload.
         Err(err) => {
-            // The Go version let the login error surface as an empty user info; clients read the
-            // `status`/`auth` fields to decide whether the credentials worked, so say so explicitly.
-            tracing::error!("provider login failed: {err}");
-            (
-                UserInfo {
-                    username: config.user.as_str().to_string(),
-                    password: config.password.as_str().to_string(),
-                    status: "Mismatched Login".to_string(),
-                    message: err.to_string(),
-                    auth: crate::xtream::models::FlexBool::new(false),
-                    ..UserInfo::default()
-                },
-                ServerInfo {
-                    url: config.advertised_url(),
-                    port: advertised,
-                    https_port: advertised,
-                    rtmp_port: advertised,
-                    protocol: protocol.to_string(),
-                    timezone: "UTC".to_string(),
-                    ..ServerInfo::default()
-                },
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("provider login failed: {err}"),
             )
         }
     };
+
+    let (mut user, mut server) = (auth.user_info, auth.server_info);
+    user.username = config.user.as_str().to_string();
+    user.password = config.password.as_str().to_string();
+    server.url = config.advertised_url();
+    server.port = advertised;
+    server.https_port = advertised;
+    server.rtmp_port = advertised;
+    server.protocol = protocol.to_string();
+    let (user_info, server_info) = (user, server);
 
     json_response(&LoginResponse {
         user_info,
         server_info,
     })
-}
-
-fn value_of<T, E>(result: Result<T, E>) -> Value
-where
-    T: serde::Serialize,
-    E: std::fmt::Display,
-{
-    match result {
-        Ok(value) => {
-            serde_json::to_value(&value).unwrap_or_else(|err| json!({"error": err.to_string()}))
-        }
-        Err(err) => {
-            tracing::error!("upstream request failed: {err}");
-            json!({"error": err.to_string()})
-        }
-    }
 }
 
 fn param(params: &[(String, String)], name: &str) -> Option<String> {
@@ -213,19 +217,20 @@ fn required(params: &[(String, String)], name: &str) -> Option<String> {
     }
 }
 
-fn limit(params: &[(String, String)]) -> i64 {
-    param(params, "limit")
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0)
+/// `validateParams` failed: `AbortWithError(400, err)` — the status alone.
+fn missing_param(name: &str) -> Rsp {
+    error(StatusCode::BAD_REQUEST, format!("missing \"{name}\""))
 }
 
-fn missing_param(name: &str) -> Rsp {
-    let mut response = json_error(StatusCode::BAD_REQUEST, format!("missing \"{name}\""));
-    response.headers_mut().insert(
-        axum::http::header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/json"),
-    );
-    response
+/// A failed provider call. The Go release left the status variable unset on every `Action` error,
+/// so gin answered **200 with an empty body**; apps that polled a degraded provider saw exactly
+/// that, so the shape is kept even though the message is more honest.
+fn action_failure(action: &str, err: &anyhow::Error) -> Rsp {
+    tracing::warn!("player_api {action} failed: {err}");
+    AxumResponse::builder()
+        .status(StatusCode::OK)
+        .body(Body::empty())
+        .unwrap_or_else(|_| AxumResponse::new(Body::empty()))
 }
 
 // ---------------------------------------------------------------------------
@@ -442,27 +447,89 @@ mod tests {
             Some("get_live_streams")
         );
         assert_eq!(required(&params, "category_id"), None);
+        assert_eq!(
+            optional(&params, "category_id"),
+            "",
+            "an absent category is not an error, it means every item"
+        );
     }
 
-    #[test]
-    fn missing_param_reports_the_provider_message() {
+    #[tokio::test]
+    async fn missing_param_is_a_bare_400() {
         let response = missing_param("series_id");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(response.headers().get("content-type").is_none());
         assert_eq!(
-            response.headers().get("content-type").unwrap(),
-            "application/json"
+            body_of(response).await.len(),
+            0,
+            "gin's AbortWithError sent the status and nothing else"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failure_answer_is_empty_and_carries_no_content_type() {
+        let response = error(StatusCode::NOT_FOUND, "cannot reach the provider");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(
+            response.headers().get("content-type").is_none(),
+            "an error answer must not advertise a body"
+        );
+        assert_eq!(body_of(response).await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_provider_failure_answers_the_go_release_empty_200() {
+        // The Go version left the status unset for every failed Action, so a broken provider
+        // produced `200` with no body at all. Unpretty, but clients are built against it.
+        let raw = vec![
+            "--hostname".to_string(),
+            "proxy.test".to_string(),
+            "--xtream-base-url".to_string(),
+            "http://provider.invalid:1".to_string(),
+            "--xtream-user".to_string(),
+            "pu".to_string(),
+            "--xtream-password".to_string(),
+            "pp".to_string(),
+        ];
+        let config = crate::config::build(&raw).expect("config builds");
+        let state = std::sync::Arc::new(
+            crate::state::AppState::startup(config)
+                .await
+                .expect("state builds"),
+        );
+        let response = player_api(
+            &state,
+            &[("action".to_string(), "get_live_streams".to_string())],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn json_answers_say_so_the_way_gin_did() {
+        let response = json_response(&serde_json::json!({ "ok": true }));
+        assert_eq!(
+            response.headers()["content-type"],
+            "application/json; charset=utf-8"
         );
     }
 
     #[test]
-    fn limit_is_optional_and_numeric() {
+    fn limit_is_optional_and_a_broken_one_is_an_error() {
         let params = vec![("limit".to_string(), "20".to_string())];
-        assert_eq!(limit(&params), 20);
-        assert_eq!(limit(&[]), 0);
+        assert_eq!(epg_limit(&params), Some(20));
+        assert_eq!(epg_limit(&[]), Some(0), "absent means do not send it");
         assert_eq!(
-            limit(&[("limit".to_string(), "lots".to_string())]),
-            0,
-            "a non numeric limit falls back to the provider default (0 = do not send the parameter)"
+            epg_limit(&[("limit".to_string(), "lots".to_string())]),
+            None,
+            "`strconv.Atoi` failed in the Go version, which was a bare 500"
         );
+    }
+
+    async fn body_of(response: AxumResponse) -> axum::body::Bytes {
+        axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("body reads")
     }
 }

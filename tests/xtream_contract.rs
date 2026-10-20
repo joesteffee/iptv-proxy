@@ -217,10 +217,14 @@ async fn an_hls_segment_uses_the_redirect_learned_from_the_playlist() {
     let provider = support::MockProvider::start().await;
     let app = xtream_app(&provider).await;
 
-    // Without a playlist request the proxy has no signed target for the channel.
+    // Without a playlist request the proxy has no signed target for the channel. gin's
+    // `AbortWithError` sent a bare 500, so the body is empty and the reason is in the log only.
     let (status, _, body) = fetch(&app, "/hls/tok1/alpha_seg1.ts").await;
     assert_eq!(status, 500);
-    assert!(body.contains("HSL redirect url not found"), "{body}");
+    assert_eq!(
+        body, "",
+        "the Go release answered errors with the status alone"
+    );
 
     fetch(&app, "/live/iptv/secret/alpha.m3u8").await;
 
@@ -235,10 +239,67 @@ async fn an_hls_segment_uses_the_redirect_learned_from_the_playlist() {
         "the hlsr route substitutes the provider credentials"
     );
 
-    // A chunk without the `channel_index` shape is rejected.
+    // A chunk without the `channel_index` shape is rejected with the same bare 500.
     let (status, _, body) = fetch(&app, "/hls/tok1/malformed").await;
     assert_eq!(status, 500);
-    assert!(body.contains("HSL malformed chunk"), "{body}");
+    assert_eq!(body, "");
+}
+
+#[tokio::test]
+async fn a_stream_list_without_a_category_covers_every_category() {
+    // The Go release only required `series_id`, `vod_id` and `stream_id`. An app asking for
+    // `get_live_streams` with no category got the whole list back, so this must not be a 400.
+    let provider = support::MockProvider::start().await;
+    let app = xtream_app(&provider).await;
+
+    let (status, _, body) = fetch(
+        &app,
+        &format!("/player_api.php?{AUTH}&action=get_live_streams"),
+    )
+    .await;
+    assert_eq!(status, 200, "a missing category is not an error: {body}");
+    assert!(
+        body.contains("Alpha TV") && body.contains("Beta TV"),
+        "{body}"
+    );
+    let sent = provider.last_api_query();
+    assert!(
+        !sent.contains("category_id"),
+        "an absent category must be left out of the provider call, not sent empty: {sent}"
+    );
+
+    let (status, _, body) = fetch(
+        &app,
+        &format!("/player_api.php?{AUTH}&action=get_live_streams&category_id=1"),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(body.contains("Alpha TV"), "{body}");
+    assert!(
+        provider.last_api_query().contains("category_id=1"),
+        "the requested category must reach the provider"
+    );
+
+    for action in ["get_vod_streams", "get_series"] {
+        let (status, _, body) =
+            fetch(&app, &format!("/player_api.php?{AUTH}&action={action}")).await;
+        assert_eq!(status, 200, "{action} behaves the same way: {body}");
+    }
+}
+
+#[tokio::test]
+async fn a_broken_limit_is_a_bare_500() {
+    // Go ran `strconv.Atoi` on `limit` and aborted with 500 when it was not a number.
+    let provider = support::MockProvider::start().await;
+    let app = xtream_app(&provider).await;
+
+    let (status, _, body) = fetch(
+        &app,
+        &format!("/player_api.php?{AUTH}&action=get_short_epg&stream_id=101&limit=lots"),
+    )
+    .await;
+    assert_eq!(status, 500);
+    assert_eq!(body, "");
 }
 
 #[tokio::test]
@@ -298,20 +359,21 @@ async fn player_api_actions_are_proxied_and_validated() {
         assert_eq!(status, 200, "{action} -> {body}");
         assert_eq!(
             header_value(&headers, "content-type").as_deref(),
-            Some("application/json"),
+            Some("application/json; charset=utf-8"),
             "{action}"
         );
         assert!(body.contains(needle), "{action} -> {body}");
     }
 
-    // Required parameters are enforced with the Go error text.
-    let (status, _, body) = fetch(
+    // A missing parameter is a bare 400, exactly like `AbortWithError(400, missing "series_id")`.
+    let (status, headers, body) = fetch(
         &app,
         &format!("/player_api.php?{AUTH}&action=get_series_info"),
     )
     .await;
     assert_eq!(status, 400);
-    assert_eq!(body, "{\"error\":\"missing \\\"series_id\\\"\"}");
+    assert_eq!(body, "");
+    assert!(header_value(&headers, "content-type").is_none());
 
     let (status, _, body) = fetch(
         &app,
@@ -319,7 +381,7 @@ async fn player_api_actions_are_proxied_and_validated() {
     )
     .await;
     assert_eq!(status, 400);
-    assert_eq!(body, "{\"error\":\"missing \\\"stream_id\\\"\"}");
+    assert_eq!(body, "", "a validation failure is the status alone");
 }
 
 #[tokio::test]
@@ -423,7 +485,7 @@ async fn an_xtream_subscription_is_detected_from_the_playlist_url() {
 }
 
 #[tokio::test]
-async fn auto_detection_does_not_register_the_generic_stream_route() {
+async fn auto_detection_keeps_the_whole_xtream_route_table() {
     let provider = support::MockProvider::start().await;
     let cfg = config(
         "",
@@ -437,16 +499,28 @@ async fn auto_detection_does_not_register_the_generic_stream_route() {
     );
     let app = app(state(cfg).await);
 
-    // `/live/...` is registered, the catch-all `/{user}/{pass}/{id}` is not.
+    // Auto mode answers the shaped routes…
     let (status, _, _) = fetch(&app, "/live/iptv/secret/101.ts").await;
     assert_eq!(status, 200);
 
-    let app2 = {
-        let _ = enable_all; // keep the import used in every cfg
-        app
-    };
-    let (status, _, _) = fetch(&app2, "/whatever/credentials/777").await;
+    // …and every other Xtream route as well. The Go release registered the whole `xtreamRoutes()`
+    // table first and only then added the playlist route, so the generic passthrough, `hls` and
+    // `play` exist in auto mode too — dropping them 404'd apps that used them.
+    let (status, _, body) = fetch(&app, "/iptv/secret/777").await;
+    assert_eq!(status, 200, "the generic route must exist: {body}");
+
+    let (status, _, body) = fetch(&app, "/play/tok/live").await;
+    assert_eq!(status, 200, "`play` must exist: {body}");
+
+    // A client using somebody else's credentials still matches nothing.
+    let (status, _, _) = fetch(&app, "/whatever/credentials/777").await;
     assert_eq!(status, 404);
+
+    // And the playlist comes from the provider, not from a parsed local file.
+    let (status, _, body) = fetch(&app, &format!("/iptv.m3u?{AUTH}")).await;
+    assert_eq!(status, 200);
+    assert!(body.contains("#EXTM3U"), "{body}");
+    let _ = enable_all;
 }
 
 /// The wide-catalogue version of the single-connection test: enough categories that the concurrent

@@ -224,8 +224,8 @@ impl XtreamClient {
         self.get_json(Some("get_series_info"), &params).await
     }
 
-    /// `get_vod_info`: forwarded verbatim, so the whole object is kept as JSON.
-    pub async fn vod_info(&self, vod_id: &str) -> Result<serde_json::Value, XtreamError> {
+    /// `get_vod_info`.
+    pub async fn vod_info(&self, vod_id: &str) -> Result<VodInfo, XtreamError> {
         let params = [("vod_id", vod_id.to_string())];
         self.get_json(Some("get_vod_info"), &params).await
     }

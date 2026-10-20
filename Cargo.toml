@@ -25,7 +25,9 @@ percent-encoding = "2"
 redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "stream"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["raw_value"] }
+# `preserve_order` keeps the key order of whatever produced the object, so a struct re-encoded
+# through `serde_json::Value` still comes out in Go's declaration order instead of sorted.
+serde_json = { version = "1", features = ["raw_value", "preserve_order"] }
 sha2 = "0.10"
 tokio-util = { version = "0.7", features = ["io"] }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "signal"] }
