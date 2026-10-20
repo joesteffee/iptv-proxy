@@ -124,7 +124,8 @@ Xtream mode (in place of the last two rows):
   `Too many redirects (N), possible redirect loop`.
 - **Caching.** Generated playlists are written to the container's temp directory and reused until
   `M3U_CACHE_EXPIRATION` hours have passed. Concurrent requests for the same playlist share one
-  build. With `REDIS_URL` set, catalogue data is cached in Redis for 7 days and refreshed in the
+  build, and a build keeps running if the client that started it hangs up — very large catalogues
+  take a long time to assemble and an impatient IPTV app should not cost all of that work. With `REDIS_URL` set, catalogue data is cached in Redis for 7 days and refreshed in the
   background before it expires.
 - **Fetching.** Categories and per-category stream lists are fetched concurrently and cached, and
   the provider login is reused for an hour. A full playlist build is much faster than one request

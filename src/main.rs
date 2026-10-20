@@ -48,9 +48,13 @@ async fn main() {
         }
     };
 
+    let provider = if state.config.xtream_base_url.is_empty() {
+        String::new()
+    } else {
+        format!(" for {}", state.config.xtream_base_url)
+    };
     tracing::info!(
-        "listening on {port} for {} as {} ({})",
-        state.config.xtream_base_url,
+        "listening on {port}{provider} as {} ({})",
         state.config.host_config.hostname,
         if state.config.xtream_enabled() {
             "xtream"

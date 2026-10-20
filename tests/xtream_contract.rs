@@ -2,10 +2,12 @@
 
 mod support;
 
+use axum::body::Body;
 use support::{
     app, config, enable_all, fetch, header_value, post_form, post_json, state, xtream_app, AUTH,
     PROVIDER_PASSWORD, PROVIDER_USER,
 };
+use tower::ServiceExt;
 
 /// The playlist the mock catalogue must produce once every category is enabled.
 const EXPECTED: &str = concat!(
@@ -490,4 +492,38 @@ async fn a_connection_capped_provider_falls_back_to_one_request_at_a_time() {
         );
     }
     assert_eq!(body.matches("#EXTINF").count(), 18);
+}
+
+/// An IPTV app gives up long before a huge catalogue finishes. Hanging up must not throw away the
+/// upstream fetching already done, or every impatient client would restart a multi-hour build.
+#[tokio::test]
+async fn a_client_that_hangs_up_mid_build_still_leaves_a_cached_playlist() {
+    let provider = support::MockProvider::start().await;
+    // One connection at a time makes the mock hold each request 20 ms, so the build is still
+    // running when the client below hangs up.
+    provider.set_max_concurrent(1);
+    provider.set_wide_catalogue(4);
+    let (app, state) = support::xtream_state_app(&provider).await;
+    enable_all(&app).await;
+
+    let request = axum::http::Request::builder()
+        .uri(format!("/get.php?{AUTH}&output=ts"))
+        .body(Body::empty())
+        .unwrap();
+    let client = tokio::spawn(async move { app.oneshot(request).await.unwrap() });
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    client.abort();
+
+    // The detached build finishes on its own and lands in the cache.
+    for _ in 0..50 {
+        if state
+            .m3u_cache
+            .fresh_path("apigetts", state.config.m3u_cache_expiration)
+            .is_some()
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("the build was abandoned together with the client that started it");
 }

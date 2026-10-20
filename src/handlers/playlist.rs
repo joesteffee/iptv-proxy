@@ -84,11 +84,11 @@ pub async fn xtream_api_get(State(state): State<Arc<AppState>>, request: Request
 
     let cache_name = format!("apiget{output}");
 
-    let result = serve_cached_playlist(&state, &cache_name, || {
-        let state = Arc::clone(&state);
-        let output = output.clone();
-        let cache_name = cache_name.clone();
-        async move { generate_playlist(&state, &cache_name, &output).await }
+    let building = Arc::clone(&state);
+    let built_output = output;
+    let built_key = cache_name.clone();
+    let result = serve_cached_playlist(&state, &cache_name, move || async move {
+        generate_playlist(&building, &built_key, &built_output).await
     })
     .await;
 
@@ -107,10 +107,10 @@ async fn serve_passthrough(
 
     // `upstream` doubles as the cache key: two clients asking for different `type`/`output`
     // combinations legitimately get different files.
-    let result = serve_cached_playlist(state, &upstream, || {
-        let state = Arc::clone(state);
-        let upstream = upstream.clone();
-        async move { fetch_passthrough_playlist(&state, &upstream).await }
+    let building = Arc::clone(state);
+    let built_url = upstream.clone();
+    let result = serve_cached_playlist(state, &upstream, move || async move {
+        fetch_passthrough_playlist(&building, &built_url).await
     })
     .await;
 
@@ -128,25 +128,43 @@ async fn serve_cached_playlist<F, Fut>(
     build: F,
 ) -> Result<PathBuf, Rsp>
 where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<PathBuf, Rsp>>,
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<PathBuf, Rsp>> + Send + 'static,
 {
     let expiration = state.config.m3u_cache_expiration;
     if let Some(path) = state.m3u_cache.fresh_path(key, expiration) {
         return Ok(path);
     }
 
-    // A playlist rebuild is the most expensive thing this service does; make concurrent clients wait
-    // for the first one instead of each starting their own.
-    state
-        .locks
-        .with(key, || async {
-            if let Some(path) = state.m3u_cache.fresh_path(key, expiration) {
-                return Ok(path);
-            }
-            build().await
-        })
-        .await
+    // A playlist build is the most expensive thing this service does, so it runs detached from the
+    // request: an IPTV app gives up long before a huge catalogue finishes, and hanging up must not
+    // throw away the fetching already done. Concurrent clients still wait for one build, because the
+    // work holds the keyed lock.
+    let running = Arc::clone(state);
+    let lock_key = key.to_string();
+    let check_key = key.to_string();
+
+    let built = tokio::spawn(async move {
+        running
+            .locks
+            .with(&lock_key, || {
+                let running = Arc::clone(&running);
+                async move {
+                    if let Some(path) = running.m3u_cache.fresh_path(&check_key, expiration) {
+                        return Ok(path);
+                    }
+                    build().await
+                }
+            })
+            .await
+    });
+
+    built.await.map_err(|err| {
+        error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("playlist build failed: {err}"),
+        )
+    })?
 }
 
 /// Fetches the provider playlist, validates it, and stores the rewritten copy.
