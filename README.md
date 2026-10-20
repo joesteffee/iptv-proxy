@@ -140,7 +140,10 @@ Xtream mode (in place of the last two rows):
 ## Differences from the Go release
 
 The wire behaviour is the same: same environment variables, same flags, same routes, same playlist
-bytes, same status codes and error texts. The following differences are deliberate.
+bytes, same status codes, same error texts. Both builds were run side by side against the same
+provider and every endpoint was compared byte for byte in all three modes (plain M3U, Xtream with
+and without automatic detection, and behind `CUSTOM_ENDPOINT`). The following differences are
+deliberate.
 
 1. **HTTP/2 to the provider** is negotiated with ALPN instead of prior-knowledge h2c. Plain HTTP/1.1
    is unaffected.
@@ -159,6 +162,13 @@ bytes, same status codes and error texts. The following differences are delibera
    applied, so a provider name containing those characters is written literally.
 9. **Invalid configuration fails fast** with one clear message per problem. Go accepted some invalid
    values and ignored them.
+10. **Extra provider fields survive.** `get_vod_info` and `get_series_info` answer with the same
+    complete object the Go release produced — including the zero-valued ffprobe fields it invented
+    for a provider that omitted them — but a field the provider adds on top is kept instead of being
+    dropped. Only clients that reject unknown JSON keys can notice.
+11. **EPG titles and descriptions are passed through unchanged.** The Go release decoded them as
+    base64 and re-encoded them, which corrupted anything that was not valid base64 and dropped
+    padding. Text from a provider that sends real base64 decodes to the same thing either way.
 
 ## Development
 
