@@ -21,11 +21,13 @@ use std::path::Path;
 pub type Rsp = Response<Body>;
 
 /// Plain-text error, the shape Gin's `AbortWithStatus` produced.
+/// Failure answer. gin's `AbortWithError` wrote the status and nothing else — the message only ever
+/// reached the server log — so clients of the Go release saw an empty body here and see one now.
 pub fn error(status: StatusCode, message: impl std::fmt::Display) -> Rsp {
+    tracing::warn!("{}: {message}", status.as_u16());
     Response::builder()
         .status(status)
-        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(Body::from(format!("{message}\n")))
+        .body(Body::empty())
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response_body())
 }
 
